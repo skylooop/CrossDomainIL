@@ -1,0 +1,13 @@
+_target_: agents.sac.SAC
+_partial_: True
+## FROM D3IL paper
+name: SAC
+seed: 42
+
+buffer_size: 1_000_000
+init_random_samples: 1_000
+start_training: 512
+updates_per_step: 1
+batch_size: 256
+
+

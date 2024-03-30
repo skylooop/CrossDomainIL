@@ -1,0 +1,10 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - env: pointumaze
+  - algo: sac
+
+seed: 42
+max_steps: 1_000_000
+log_interval: 10_000
