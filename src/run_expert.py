@@ -16,6 +16,7 @@ from datasets.replay_buffer import ReplayBuffer
 
 import gymnasium as gym
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
+from gymnasium.wrappers.time_limit import TimeLimit
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="expert")
 def collect_expert(cfg: DictConfig) -> None:
@@ -36,9 +37,10 @@ def collect_expert(cfg: DictConfig) -> None:
     
     if cfg.env.name == "PointUMaze":
         from envs.maze_envs import CustomPointUMazeSize3Env
-        env = CustomPointUMazeSize3Env(render_mode='rgb_array')
-        env = RecordEpisodeStatistics(env)
         episode_limit = 1000
+        env = CustomPointUMazeSize3Env(render_mode='rgb_array')
+        env = TimeLimit(env, max_episode_steps=episode_limit)
+        env = RecordEpisodeStatistics(env)
         
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
