@@ -98,10 +98,11 @@ class CustomPointUMazeSize3Env(_CustomUMazeEnv):
 
 
 class CustomAntUMazeSize3Env(_CustomUMazeEnv):
-    def __init__(self, ):
+    def __init__(self, render_mode='rgb_array'):
         super(CustomAntUMazeSize3Env, self).__init__(model_cls=AntSize3Env,
                                                      maze_task=GoalRewardUMaze,  # DistRewardUMaze GoalRewardUMaze
                                                      maze_size_scaling=3, # GoalRewardUMaze.MAZE_SIZE_SCALING.ant,
+                                                     render_mode=render_mode,
                                                      inner_reward_scaling=GoalRewardUMaze.INNER_REWARD_SCALING,
                                                      past_frames=4)
 

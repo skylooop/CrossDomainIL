@@ -362,9 +362,9 @@ class MazeEnv(gym.Env):
                 additional_obs.append(self.wrapped_env.get_body_com(name))
 
         obs = np.concatenate([wrapped_obs[:3]] + additional_obs + [wrapped_obs[3:]])
-        return np.concatenate([obs, *view, np.array([self.t * 0.001])])
+        return np.concatenate([obs, *view, np.array([self.t * 0.001])]).astype(np.float32)
 
-    def reset(self) -> np.ndarray:
+    def reset(self, seed=None, options=None) -> np.ndarray:
         self.t = 0
         self.wrapped_env.reset()
         # Samples a new goal
@@ -374,7 +374,7 @@ class MazeEnv(gym.Env):
         if len(self._init_positions) > 1:
             xy = np.random.choice(self._init_positions)
             self.wrapped_env.set_xy(xy)
-        return self._get_obs()
+        return self._get_obs(), {}
 
     def set_marker(self) -> None:
         for i, goal in enumerate(self._task.goals):
@@ -409,9 +409,9 @@ class MazeEnv(gym.Env):
             return self._websock_server_pipe.send(self._render_image())
         else:
             if self.wrapped_env.viewer is None:
-                #self.wrapped_env.render()
-                #self._maybe_move_camera(self.wrapped_env.viewer)
-                return self.wrapped_env.render()
+                self.wrapped_env.render()
+                self._maybe_move_camera(self.wrapped_env.viewer)
+            return self.wrapped_env.render()
 
     @property
     def action_space(self):
@@ -466,13 +466,13 @@ class MazeEnv(gym.Env):
                     idx = self.wrapped_env.model.body_name2id(name)
                     self.wrapped_env.data.xipos[idx][:2] = pos
         else:
-            inner_next_obs, inner_reward, _, info = self.wrapped_env.step(action)
+            inner_next_obs, inner_reward, _,_, info = self.wrapped_env.step(action)
         next_obs = self._get_obs()
         inner_reward = self._inner_reward_scaling * inner_reward
         outer_reward = self._task.reward(next_obs)
         done = self._task.termination(next_obs)
         info["position"] = self.wrapped_env.get_xy()
-        return next_obs, inner_reward + outer_reward, done, info
+        return next_obs, inner_reward + outer_reward, done, False, info
 
     def close(self) -> None:
         self.wrapped_env.close()

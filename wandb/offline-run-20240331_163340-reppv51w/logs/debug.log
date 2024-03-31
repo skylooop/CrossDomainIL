@@ -1,0 +1,28 @@
+2024-03-31 16:33:40,085 INFO    MainThread:1572422 [wandb_setup.py:_flush():76] Current SDK version is 0.16.4
+2024-03-31 16:33:40,085 INFO    MainThread:1572422 [wandb_setup.py:_flush():76] Configure stats pid to 1572422
+2024-03-31 16:33:40,085 INFO    MainThread:1572422 [wandb_setup.py:_flush():76] Loading settings from /home/m_bobrin/.config/wandb/settings
+2024-03-31 16:33:40,085 INFO    MainThread:1572422 [wandb_setup.py:_flush():76] Loading settings from /home/m_bobrin/CrossDomainIL/wandb/settings
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'src/run_expert.py', 'program_abspath': '/home/m_bobrin/CrossDomainIL/src/run_expert.py', 'program': '/home/m_bobrin/CrossDomainIL/src/run_expert.py'}
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_init.py:_log_setup():526] Logging user logs to /home/m_bobrin/CrossDomainIL/wandb/offline-run-20240331_163340-reppv51w/logs/debug.log
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_init.py:_log_setup():527] Logging internal logs to /home/m_bobrin/CrossDomainIL/wandb/offline-run-20240331_163340-reppv51w/logs/debug-internal.log
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_init.py:init():566] calling init triggers
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_init.py:init():573] wandb.init called with sweep_config: {}
+config: {'seed': 42, 'max_steps': 1000000, 'log_interval': 10000, 'video_log_interval': 10000, 'env': {'name': 'PointUMaze'}, 'algo': {'_target_': 'agents.sac.SAC', '_partial_': True, 'name': 'SAC', 'seed': 42, 'buffer_size': 1000000, 'init_random_samples': 1000, 'start_training': 512, 'updates_per_step': 1, 'batch_size': 256, 'discount': 0.99, 'tau': 0.005, 'init_temperature': 1.0, 'backup_entropy': True, 'target_entropy': None, 'target_update_period': 1, 'init_mean': None, 'policy_final_fc_init_scale': 1.0, 'actor_lr': 0.0003, 'critic_lr': 0.0003, 'temp_lr': 0.0003, 'actor_def': {'_target_': 'networks.policies.NormalTanhPolicy', '_partial_': True, 'hidden_dims': [256, 256]}, 'critic_def': {'_target_': 'networks.critic_net.DoubleCritic', 'hidden_dims': [256, 256]}}, 'logger': {'project': 'CrossDomainIL'}}
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_init.py:init():616] starting backend
+2024-03-31 16:33:40,086 INFO    MainThread:1572422 [wandb_init.py:init():620] setting up manager
+2024-03-31 16:33:40,088 INFO    MainThread:1572422 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2024-03-31 16:33:40,090 INFO    MainThread:1572422 [wandb_init.py:init():628] backend started and connected
+2024-03-31 16:33:40,093 INFO    MainThread:1572422 [wandb_init.py:init():720] updated telemetry
+2024-03-31 16:33:40,099 INFO    MainThread:1572422 [wandb_init.py:init():753] communicating run to backend with 90.0 second timeout
+2024-03-31 16:33:40,107 INFO    MainThread:1572422 [wandb_init.py:init():804] starting run threads in backend
+2024-03-31 16:33:43,138 INFO    MainThread:1572422 [wandb_run.py:_console_start():2241] atexit reg
+2024-03-31 16:33:43,138 INFO    MainThread:1572422 [wandb_run.py:_redirect():2096] redirect: wrap_raw
+2024-03-31 16:33:43,138 INFO    MainThread:1572422 [wandb_run.py:_redirect():2161] Wrapping output streams.
+2024-03-31 16:33:43,138 INFO    MainThread:1572422 [wandb_run.py:_redirect():2186] Redirects installed.
+2024-03-31 16:33:43,139 INFO    MainThread:1572422 [wandb_init.py:init():847] run started, returning control to user process
+2024-03-31 16:34:18,956 INFO    MainThread:1572422 [wandb_run.py:_finish():1970] finishing run CrossDomainIL/reppv51w
+2024-03-31 16:34:18,956 INFO    MainThread:1572422 [wandb_run.py:_atexit_cleanup():2210] got exitcode: 0
+2024-03-31 16:34:18,956 INFO    MainThread:1572422 [wandb_run.py:_restore():2193] restore
+2024-03-31 16:34:18,956 INFO    MainThread:1572422 [wandb_run.py:_restore():2199] restore done

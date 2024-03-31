@@ -1,3 +1,4 @@
 SUPPORTED_ENVS = [
-    "PointUMaze"
+    "PointUMaze",
+    "PointAntUMaze"
 ]

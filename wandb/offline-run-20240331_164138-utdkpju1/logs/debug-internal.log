@@ -1,0 +1,33 @@
+2024-03-31 16:41:38,753 INFO    StreamThr :1574462 [internal.py:wandb_internal():86] W&B internal server running at pid: 1574462, started at: 2024-03-31 16:41:38.752250
+2024-03-31 16:41:38,755 DEBUG   HandlerThread:1574462 [handler.py:handle_request():146] handle_request: status
+2024-03-31 16:41:38,757 INFO    WriterThread:1574462 [datastore.py:open_for_write():87] open: /home/m_bobrin/CrossDomainIL/wandb/offline-run-20240331_164138-utdkpju1/run-utdkpju1.wandb
+2024-03-31 16:41:38,818 DEBUG   HandlerThread:1574462 [handler.py:handle_request():146] handle_request: run_start
+2024-03-31 16:41:38,838 DEBUG   HandlerThread:1574462 [system_info.py:__init__():26] System info init
+2024-03-31 16:41:38,838 DEBUG   HandlerThread:1574462 [system_info.py:__init__():41] System info init done
+2024-03-31 16:41:38,838 INFO    HandlerThread:1574462 [system_monitor.py:start():194] Starting system monitor
+2024-03-31 16:41:38,839 INFO    HandlerThread:1574462 [system_monitor.py:probe():214] Collecting system info
+2024-03-31 16:41:38,839 INFO    SystemMonitor:1574462 [system_monitor.py:_start():158] Starting system asset monitoring threads
+2024-03-31 16:41:38,840 INFO    SystemMonitor:1574462 [interfaces.py:start():190] Started cpu monitoring
+2024-03-31 16:41:38,842 INFO    SystemMonitor:1574462 [interfaces.py:start():190] Started disk monitoring
+2024-03-31 16:41:38,844 INFO    SystemMonitor:1574462 [interfaces.py:start():190] Started gpu monitoring
+2024-03-31 16:41:38,845 INFO    SystemMonitor:1574462 [interfaces.py:start():190] Started memory monitoring
+2024-03-31 16:41:38,846 INFO    SystemMonitor:1574462 [interfaces.py:start():190] Started network monitoring
+2024-03-31 16:41:38,913 DEBUG   HandlerThread:1574462 [system_info.py:probe():150] Probing system
+2024-03-31 16:41:38,915 DEBUG   HandlerThread:1574462 [system_info.py:_probe_git():135] Probing git
+2024-03-31 16:41:38,924 DEBUG   HandlerThread:1574462 [system_info.py:_probe_git():143] Probing git done
+2024-03-31 16:41:38,924 DEBUG   HandlerThread:1574462 [system_info.py:probe():198] Probing system done
+2024-03-31 16:41:38,924 DEBUG   HandlerThread:1574462 [system_monitor.py:probe():223] {'os': 'Linux-6.5.0-25-generic-x86_64-with-glibc2.35', 'python': '3.10.14', 'heartbeatAt': '2024-03-31T13:41:38.913816', 'startedAt': '2024-03-31T13:41:38.743675', 'docker': None, 'cuda': None, 'args': (), 'state': 'running', 'program': '/home/m_bobrin/CrossDomainIL/src/run_expert.py', 'codePathLocal': 'src/run_expert.py', 'codePath': 'src/run_expert.py', 'git': {'remote': 'https://github.com/skylooop/CrossDomainIL.git', 'commit': 'ed3df51f8403bdc2bc38313ec97ad4865c160b7c'}, 'email': 'derivas121@gmail.com', 'root': '/home/m_bobrin/CrossDomainIL', 'host': 'dylov-rtx-1', 'username': 'm_bobrin', 'executable': '/home/m_bobrin/anaconda3/envs/jax/bin/python', 'cpu_count': 16, 'cpu_count_logical': 32, 'cpu_freq': {'current': 4055.7138125, 'min': 2200.0, 'max': 3400.0}, 'cpu_freq_per_core': [{'current': 3837.914, 'min': 2200.0, 'max': 3400.0}, {'current': 3830.256, 'min': 2200.0, 'max': 3400.0}, {'current': 3829.084, 'min': 2200.0, 'max': 3400.0}, {'current': 4777.838, 'min': 2200.0, 'max': 3400.0}, {'current': 3842.907, 'min': 2200.0, 'max': 3400.0}, {'current': 3831.94, 'min': 2200.0, 'max': 3400.0}, {'current': 3834.866, 'min': 2200.0, 'max': 3400.0}, {'current': 3835.781, 'min': 2200.0, 'max': 3400.0}, {'current': 3766.215, 'min': 2200.0, 'max': 3400.0}, {'current': 3759.53, 'min': 2200.0, 'max': 3400.0}, {'current': 3743.827, 'min': 2200.0, 'max': 3400.0}, {'current': 4405.404, 'min': 2200.0, 'max': 3400.0}, {'current': 3713.258, 'min': 2200.0, 'max': 3400.0}, {'current': 3711.087, 'min': 2200.0, 'max': 3400.0}, {'current': 3722.654, 'min': 2200.0, 'max': 3400.0}, {'current': 3765.524, 'min': 2200.0, 'max': 3400.0}, {'current': 3833.195, 'min': 2200.0, 'max': 3400.0}, {'current': 3829.671, 'min': 2200.0, 'max': 3400.0}, {'current': 3837.824, 'min': 2200.0, 'max': 3400.0}, {'current': 4791.581, 'min': 2200.0, 'max': 3400.0}, {'current': 3840.175, 'min': 2200.0, 'max': 3400.0}, {'current': 3833.332, 'min': 2200.0, 'max': 3400.0}, {'current': 3830.789, 'min': 2200.0, 'max': 3400.0}, {'current': 3840.71, 'min': 2200.0, 'max': 3400.0}, {'current': 3772.17, 'min': 2200.0, 'max': 3400.0}, {'current': 3824.812, 'min': 2200.0, 'max': 3400.0}, {'current': 3740.619, 'min': 2200.0, 'max': 3400.0}, {'current': 3633.222, 'min': 2200.0, 'max': 3400.0}, {'current': 3602.916, 'min': 2200.0, 'max': 3400.0}, {'current': 3652.028, 'min': 2200.0, 'max': 3400.0}, {'current': 3654.728, 'min': 2200.0, 'max': 3400.0}, {'current': 3638.437, 'min': 2200.0, 'max': 3400.0}], 'disk': {'/': {'total': 915.3213348388672, 'used': 195.0740623474121}}, 'gpu': 'NVIDIA GeForce RTX 3090 Ti', 'gpu_count': 2, 'gpu_devices': [{'name': 'NVIDIA GeForce RTX 3090 Ti', 'memory_total': 25757220864}, {'name': 'NVIDIA GeForce RTX 3090 Ti', 'memory_total': 25757220864}], 'memory': {'total': 62.72709274291992}}
+2024-03-31 16:41:38,924 INFO    HandlerThread:1574462 [system_monitor.py:probe():224] Finished collecting system info
+2024-03-31 16:41:38,924 INFO    HandlerThread:1574462 [system_monitor.py:probe():227] Publishing system info
+2024-03-31 16:41:38,924 DEBUG   HandlerThread:1574462 [system_info.py:_save_conda():207] Saving list of conda packages installed into the current environment
+2024-03-31 16:41:41,563 DEBUG   HandlerThread:1574462 [system_info.py:_save_conda():219] Saving conda packages done
+2024-03-31 16:41:41,579 INFO    HandlerThread:1574462 [system_monitor.py:probe():229] Finished publishing system info
+2024-03-31 16:41:41,776 DEBUG   HandlerThread:1574462 [handler.py:handle_request():146] handle_request: python_packages
+2024-03-31 16:41:43,759 DEBUG   HandlerThread:1574462 [handler.py:handle_request():146] handle_request: status_report
+2024-03-31 16:41:43,760 DEBUG   SenderThread:1574462 [sender.py:send_request():405] send_request: status_report
+2024-03-31 16:41:48,761 DEBUG   HandlerThread:1574462 [handler.py:handle_request():146] handle_request: status_report
+2024-03-31 16:41:48,761 DEBUG   SenderThread:1574462 [sender.py:send_request():405] send_request: status_report
+2024-03-31 16:41:53,763 DEBUG   HandlerThread:1574462 [handler.py:handle_request():146] handle_request: status_report
+2024-03-31 16:41:53,763 DEBUG   SenderThread:1574462 [sender.py:send_request():405] send_request: status_report
+2024-03-31 16:41:58,765 DEBUG   HandlerThread:1574462 [handler.py:handle_request():146] handle_request: status_report
+2024-03-31 16:41:58,765 DEBUG   SenderThread:1574462 [sender.py:send_request():405] send_request: status_report

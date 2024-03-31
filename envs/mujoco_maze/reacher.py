@@ -42,6 +42,7 @@ class ReacherEnv(AgentModel):
             self._get_obs(),
             self._forward_reward_weight * forward_reward - ctrl_cost,
             False,
+            False,
             dict(reward_forward=forward_reward, reward_ctrl=-ctrl_cost),
         )
 

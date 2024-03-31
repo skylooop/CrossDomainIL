@@ -12,6 +12,8 @@ from tqdm.auto import tqdm
 import numpy as np
 import random
 
+import wandb
+
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
 from utils.const import SUPPORTED_ENVS
@@ -33,17 +35,27 @@ def collect_expert(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
     
     print(f"Saving expert weights into {os.getcwd()}")
-    
+    wandb.init(
+        project=cfg.logger.project,
+        config=dict(cfg),
+        group="expert_" + f"{cfg.env.name}_{cfg.algo.name}",
+    )
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
     
     if cfg.env.name == "PointUMaze":
         from envs.maze_envs import CustomPointUMazeSize3Env
+        env = CustomPointUMazeSize3Env()
         episode_limit = 1000
-        env = CustomPointUMazeSize3Env(render_mode='rgb_array')
-        env = TimeLimit(env, max_episode_steps=episode_limit)
-        env = RecordEpisodeStatistics(env)
-        env = RecordVideo(env, video_folder='agent_video', step_trigger=lambda _: _ % cfg.video_log_interval == 0 and _ > cfg.video_log_interval)
+        
+    elif cfg.env.name == "PointAntUMaze":
+        from envs.maze_envs import CustomAntUMazeSize3Env
+        episode_limit = 1000
+        env = CustomAntUMazeSize3Env()
+        
+    env = TimeLimit(env, max_episode_steps=episode_limit)
+    env = RecordEpisodeStatistics(env)
+    env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda _: _ % cfg.video_log_interval == 0)# and _ > cfg.video_log_interval)
         
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
@@ -69,8 +81,8 @@ def collect_expert(cfg: DictConfig) -> None:
         observation = next_observation
         
         if done:
-            for k,v in info['episode'].items():
-                print(f"{k}/{v}")
+            wandb.log({f"Training/rewards": info['episode']['r'],
+                       f"Training/episode length": info['episode']['l']}, step=i)
             (observation, info), done = env.reset(), False
             
         if i >= cfg.algo.start_training:
@@ -79,8 +91,14 @@ def collect_expert(cfg: DictConfig) -> None:
                 update_info = expert_agent.update(batch)
 
             if i % cfg.log_interval == 0:
-                for k, v in update_info.items():
-                    print(f'training/{k}', v, i)
-        
+                wandb.log({f"Training/Critic loss": update_info['critic_loss'],
+                           f"Training/Actor loss": update_info['actor_loss'],
+                           f"Training/Entropy": update_info['entropy'],
+                           f"Training/Temperature": update_info['temperature'],
+                           f"Training/Temp loss": update_info['temp_loss']}, step=i)
 if __name__ == "__main__":
-    collect_expert()
+    try:
+        collect_expert()
+    except KeyboardInterrupt:
+        wandb.finish()
+        exit()

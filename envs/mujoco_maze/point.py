@@ -21,7 +21,6 @@ class PointEnv(AgentModel):
         ],
         "render_fps": 50,
     }
-    
     FILE: str = "point.xml"
     ORI_IND: int = 2
     MANUAL_COLLISION: bool = True
@@ -69,7 +68,7 @@ class PointEnv(AgentModel):
         qpos = self.init_qpos + self.np_random.uniform(
             size=self.model.nq, low=-0.1, high=0.1
         )
-        qvel = self.init_qvel + self.np_random.random(self.model.nv) * 0.1
+        qvel = self.init_qvel + self.np_random.normal(self.model.nv) * 0.1
 
         # Set everything other than point to original position and 0 velocity.
         qpos[3:] = self.init_qpos[3:]
@@ -96,10 +95,10 @@ class PointSize3Env(PointEnv):
     def viewer_setup(self):
         # size=3
         self.viewer.cam.trackbodyid = -1
-        self.viewer.cam.distance = 13.5
+        self.viewer.cam.distance = 15.5
         self.viewer.cam.elevation = -90
         self.viewer.cam.lookat[0] = 3.
-        self.viewer.cam.lookat[1] = 3.
+        self.viewer.cam.lookat[1] = 1.
         self.viewer.cam.lookat[2] = 0.
 
 
