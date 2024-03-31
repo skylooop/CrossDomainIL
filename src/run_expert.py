@@ -32,7 +32,6 @@ def collect_expert(cfg: DictConfig) -> None:
     print(f"Collecting Expert data using {cfg.algo.name} on {cfg.env.name} env")
     print(OmegaConf.to_yaml(cfg))
     
-    os.makedirs("saved_expert", exist_ok=True)
     print(f"Saving expert weights into {os.getcwd()}")
     
     np.random.seed(cfg.seed)
