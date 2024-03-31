@@ -1,5 +1,6 @@
 import numpy as np
 from gymnasium import utils
+import gymnasium as gym
 from gymnasium.envs.mujoco import mujoco_env
 import cv2
 import os
@@ -25,17 +26,26 @@ class _FrameBufferEnv:
 
 
 class _CustomInvertedPendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 25,
+    }
+    
     def __init__(self, size=(32, 32), color_permutation=[0, 1, 2],
-                 smoothing_factor=0.0, past_frames=4, not_done=True):
+                 smoothing_factor=0.0, past_frames=4, not_done=True, render_mode='rgb_array'):
         self._size = size
         self._not_done = not_done
         self._color_permutation = color_permutation
         self._smooth = 1.0 - smoothing_factor
         _FrameBufferEnv.__init__(self, past_frames)
         utils.EzPickle.__init__(self)
-        # mujoco_env.MujocoEnv.__init__(self, 'inverted_pendulum.xml', 2)
         path_to_xml = os.path.join(os.path.dirname(__file__), 'assets/inverted_pendulum.xml')
-        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2)
+        observation_space = gym.spaces.Box(-np.inf, np.inf, (4, ))
+        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2, render_mode=render_mode, observation_space=observation_space)
 
     def step(self, a):
         reward = 1.0
@@ -47,7 +57,7 @@ class _CustomInvertedPendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBuf
         if done and self._not_done:
             done = False
             reward = 0.0
-        return ob, reward, done, {}
+        return ob, reward, done, False, {}
 
     def reset_model(self):
         qpos = self.init_qpos + self.np_random.uniform(size=self.model.nq, low=-0.01, high=0.01)
@@ -67,7 +77,7 @@ class _CustomInvertedPendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBuf
         # self._update_buffer(im)
         # curr_frames = self._frames_buffer.astype('int32')
         # return {'obs': obs, 'im': curr_frames}
-        return np.concatenate([self.sim.data.qpos, self.sim.data.qvel]).ravel()
+        return np.concatenate([self.data.qpos, self.data.qvel]).ravel()
 
     def viewer_setup(self):
         v = self.viewer
@@ -99,17 +109,26 @@ class AgentInvertedPendulumEnv(_CustomInvertedPendulumEnv):
 
 
 class ExpertInvertedPendulumEnv(_CustomInvertedPendulumEnv):
-    def __init__(self, ):
+    def __init__(self, render_mode='rgb_array'):
         super(ExpertInvertedPendulumEnv, self).__init__(size=(32, 32),
                                                         color_permutation=[2, 1, 0],
                                                         smoothing_factor=0.1,
+                                                        render_mode=render_mode,
                                                         past_frames=4,
                                                         not_done=True)
 
 
-class _CustomInvertedDoublePendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):  # TODO
+class _CustomInvertedDoublePendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 50,
+    }
     def __init__(self, size=(32, 32), color_permutation=[0, 1, 2],
-                 smoothing_factor=0.0, past_frames=4, not_done=True):
+                 smoothing_factor=0.0, past_frames=4, not_done=True, render_mode = None):
         self._size = size
         self._not_done = not_done
         self._failure = False
@@ -118,14 +137,15 @@ class _CustomInvertedDoublePendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _Fr
         _FrameBufferEnv.__init__(self, past_frames)
         utils.EzPickle.__init__(self)
         path_to_xml = os.path.join(os.path.dirname(__file__), 'assets/inverted_double_pendulum.xml')
-        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2)
+        observation_space = gym.spaces.Box(-np.inf, np.inf, (11, ))
+        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2, render_mode=render_mode, observation_space=observation_space)
 
     def step(self, action):
         self.do_simulation(action, self.frame_skip)
         ob = self._get_obs()
-        x, _, y = self.sim.data.site_xpos[0]
+        x, _, y = self.data.site_xpos[0]
         dist_penalty = 0.01 * x ** 2 + (y - 2) ** 2
-        v1, v2 = self.sim.data.qvel[1:3]
+        v1, v2 = self.data.qvel[1:3]
         vel_penalty = 1e-3 * v1 ** 2 + 5e-3 * v2 ** 2
         alive_bonus = 10
         r = alive_bonus - dist_penalty - vel_penalty
@@ -135,13 +155,13 @@ class _CustomInvertedDoublePendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _Fr
             self._failure = True
         if self._failure:
             r = 0.0
-        return ob, r, done, {}
+        return ob, r, done, False, {}
 
     def reset_model(self):
         self._failure = False
         self.set_state(
             self.init_qpos + self.np_random.uniform(low=-.1, high=.1, size=self.model.nq),
-            self.init_qvel + self.np_random.randn(self.model.nv) * .1
+            self.init_qvel + self.np_random.normal(self.model.nv) * .1
         )
         if self._initialized:
             self._reset_buffer()
@@ -149,11 +169,11 @@ class _CustomInvertedDoublePendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _Fr
 
     def _get_obs(self):
         return np.concatenate([
-            self.sim.data.qpos[:1],
-            np.sin(self.sim.data.qpos[1:]),
-            np.cos(self.sim.data.qpos[1:]),
-            np.clip(self.sim.data.qvel, -10, 10),
-            np.clip(self.sim.data.qfrc_constraint, -10, 10)
+            self.data.qpos[:1],
+            np.sin(self.data.qpos[1:]),
+            np.cos(self.data.qpos[1:]),
+            np.clip(self.data.qvel, -10, 10),
+            np.clip(self.data.qfrc_constraint, -10, 10)
         ]).ravel()
 
     def get_ims(self):
@@ -174,24 +194,34 @@ class _CustomInvertedDoublePendulumEnv(mujoco_env.MujocoEnv, utils.EzPickle, _Fr
 
 
 class AgentInvertedDoublePendulumEnv(_CustomInvertedDoublePendulumEnv):
-    def __init__(self, ):
+    def __init__(self, render_mode='rgb_array'):
         super(AgentInvertedDoublePendulumEnv, self).__init__(size=(32, 32),
                                                              color_permutation=[0, 1, 2],
                                                              smoothing_factor=0.0,
+                                                             render_mode=render_mode,
                                                              past_frames=4,
                                                              not_done=True)
 
 
 class ExpertInvertedDoublePendulumEnv(_CustomInvertedDoublePendulumEnv):
-    def __init__(self, ):
+    def __init__(self, render_mode='rgb_array'):
         super(ExpertInvertedDoublePendulumEnv, self).__init__(size=(32, 32),
                                                               color_permutation=[2, 1, 0],
                                                               smoothing_factor=0.1,
+                                                              render_mode=render_mode,
                                                               past_frames=4,
                                                               not_done=True)
 
 
 class _CustomReacherEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 50,
+    }
     def __init__(self, mode='hard', past_frames=4, l2_penalty=False):
         # GlfwContext(offscreen=True)
         _FrameBufferEnv.__init__(self, past_frames)
@@ -212,7 +242,7 @@ class _CustomReacherEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         self.do_simulation(a, self.frame_skip)
         ob = self._get_obs()
         done = False
-        return ob, reward, done, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
+        return ob, reward, done, False, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
 
     def viewer_setup(self):
         self.viewer.cam.trackbodyid = 0
@@ -244,12 +274,12 @@ class _CustomReacherEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         return self._get_obs()
 
     def _get_obs(self):
-        theta = self.sim.data.qpos.flat[:2]
+        theta = self.data.qpos.flat[:2]
         return np.concatenate([
             np.cos(theta),
             np.sin(theta),
-            self.sim.data.qpos.flat[2:],
-            self.sim.data.qvel.flat[:2],
+            self.data.qpos.flat[2:],
+            self.data.qvel.flat[:2],
             self.get_body_com("fingertip") - self.get_body_com("target")
         ])
 
@@ -279,6 +309,14 @@ class ReacherEasyEnv(_CustomReacherEnv):
 
 
 class _Custom3ReacherEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 50,
+    }
     def __init__(self, mode='hard', past_frames=4, l2_penalty=False):
         _FrameBufferEnv.__init__(self, past_frames)
         self._mode = mode
@@ -298,7 +336,7 @@ class _Custom3ReacherEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         self.do_simulation(a, self.frame_skip)
         ob = self._get_obs()
         done = False
-        return ob, reward, done, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
+        return ob, reward, done, False, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
 
     def viewer_setup(self):
         self.viewer.cam.trackbodyid = 0
@@ -330,12 +368,12 @@ class _Custom3ReacherEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         return self._get_obs()
 
     def _get_obs(self):
-        theta = self.sim.data.qpos.flat[:3]
+        theta = self.data.qpos.flat[:3]
         return np.concatenate([
             np.cos(theta),
             np.sin(theta),
-            self.sim.data.qpos.flat[3:],
-            self.sim.data.qvel.flat[:3],
+            self.data.qpos.flat[3:],
+            self.data.qvel.flat[:3],
             self.get_body_com("fingertip") - self.get_body_com("target")
         ])
 
@@ -366,22 +404,32 @@ class Tilted3ReacherEasyEnv(_Custom3ReacherEnv):
 
 # No Checker
 class _CustomHalfCheetahNCEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 50,
+    }
+    
     def __init__(self, past_frames=4, action_penalties=True, reward_xmove_only=False):
         _FrameBufferEnv.__init__(self, past_frames)
         self._initialized = False
         self._action_penalties = action_penalties
         self._reward_xmove_only = reward_xmove_only
         path_to_xml = os.path.join(os.path.dirname(__file__), 'assets/half_cheetah_nc.xml')
-        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2)
+        observation_space = gym.spaces.Box(-np.inf, np.inf, (17, ))
+        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2, observation_space=observation_space, render_mode='rgb_array')
         utils.EzPickle.__init__(self)
 
     def __deepcopy__(self, memodict={}):
         return _CustomHalfCheetahNCEnv(reward_xmove_only=self._reward_xmove_only)
 
     def step(self, action):
-        xposbefore = self.sim.data.qpos[0]
+        xposbefore = self.data.qpos[0]
         self.do_simulation(action, self.frame_skip)
-        xposafter = self.sim.data.qpos[0]
+        xposafter = self.data.qpos[0]
         ob = self._get_obs()
         if not self._reward_xmove_only:
             if self._action_penalties:
@@ -395,17 +443,17 @@ class _CustomHalfCheetahNCEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBuffer
             reward_run = (xposafter - xposbefore) / self.dt
             reward = reward_ctrl + reward_run
         done = False
-        return ob, reward, done, dict(reward_run=reward_run, reward_ctrl=reward_ctrl)
+        return ob, reward, done, False, dict(reward_run=reward_run, reward_ctrl=reward_ctrl)
 
     def _get_obs(self):
         return np.concatenate([
-            self.sim.data.qpos.flat[1:],
-            self.sim.data.qvel.flat,
+            self.data.qpos.flat[1:],
+            self.data.qvel.flat,
         ])
 
     def reset_model(self):
         qpos = self.init_qpos + self.np_random.uniform(low=-.1, high=.1, size=self.model.nq)
-        qvel = self.init_qvel + self.np_random.randn(self.model.nv) * .1
+        qvel = self.init_qvel + self.np_random.normal(self.model.nv) * .1
         self.set_state(qpos, qvel)
         if self._initialized:
             self._reset_buffer()
@@ -431,6 +479,14 @@ class ExpertHalfCheetahNCEnv(_CustomHalfCheetahNCEnv):
 
 
 class _CustomLLHalfCheetahNCEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 50,
+    }
     def __init__(self, past_frames=4, action_penalties=True, reward_xmove_only=False):
         _FrameBufferEnv.__init__(self, past_frames)
         self._initialized = False
@@ -444,9 +500,9 @@ class _CustomLLHalfCheetahNCEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBuff
         return _CustomLLHalfCheetahNCEnv(reward_xmove_only=self._reward_xmove_only)
 
     def step(self, action):
-        xposbefore = self.sim.data.qpos[0]
+        xposbefore = self.data.qpos[0]
         self.do_simulation(action, self.frame_skip)
-        xposafter = self.sim.data.qpos[0]
+        xposafter = self.data.qpos[0]
         ob = self._get_obs()
         if not self._reward_xmove_only:
             if self._action_penalties:
@@ -460,12 +516,12 @@ class _CustomLLHalfCheetahNCEnv(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBuff
             reward_run = (xposafter - xposbefore) / self.dt
             reward = reward_ctrl + reward_run
         done = False
-        return ob, reward, done, dict(reward_run=reward_run, reward_ctrl=reward_ctrl)
+        return ob, reward, done, False, dict(reward_run=reward_run, reward_ctrl=reward_ctrl)
 
     def _get_obs(self):
         return np.concatenate([
-            self.sim.data.qpos.flat[1:],
-            self.sim.data.qvel.flat,
+            self.data.qpos.flat[1:],
+            self.data.qvel.flat,
         ])
 
     def reset_model(self):

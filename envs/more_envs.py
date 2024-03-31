@@ -1,18 +1,29 @@
 import numpy as np
-from gym import utils
-from gym.envs.mujoco import mujoco_env
+import gymnasium as gym
+from gymnasium.envs.mujoco import mujoco_env
+from gymnasium import utils
 import cv2
 import os
 from envs.envs import _FrameBufferEnv
 
 
 class _CustomReacher2Env(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
-    def __init__(self, past_frames=4, l2_penalty=False):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 50,
+    }
+    
+    def __init__(self, past_frames=4, l2_penalty=False, render_mode='rgb_array'):
         _FrameBufferEnv.__init__(self, past_frames)
         self._l2_penalty = l2_penalty
         utils.EzPickle.__init__(self)
         path_to_xml = os.path.join(os.path.dirname(__file__), 'assets/custom_reacher.xml')
-        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2)
+        observation_space = gym.spaces.Box(-np.inf, np.inf, (11, ))
+        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2, observation_space=observation_space, render_mode=render_mode)
 
     def step(self, a):
         vec = self.get_body_com("fingertip") - self.get_body_com("target")
@@ -25,7 +36,7 @@ class _CustomReacher2Env(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         self.do_simulation(a, self.frame_skip)
         ob = self._get_obs()
         done = False
-        return ob, reward, done, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
+        return ob, reward, done, False, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
 
     def reset_model(self):
         qpos = self.np_random.uniform(low=-0.1, high=0.1, size=self.model.nq) + self.init_qpos.flat
@@ -41,12 +52,12 @@ class _CustomReacher2Env(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         return self._get_obs()
 
     def _get_obs(self):
-        theta = self.sim.data.qpos.flat[:2]
+        theta = self.data.qpos.flat[:2]
         return np.concatenate([
             np.cos(theta),
             np.sin(theta),
-            self.sim.data.qpos.flat[2:],
-            self.sim.data.qvel.flat[:2],
+            self.data.qpos.flat[2:],
+            self.data.qvel.flat[:2],
             self.get_body_com("fingertip") - self.get_body_com("target")
         ])
 
@@ -62,8 +73,8 @@ class _CustomReacher2Env(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
 
 
 class TiltedCustomReacher2Env(_CustomReacher2Env):
-    def __init__(self, past_frames=4, l2_penalty=False):
-        super(TiltedCustomReacher2Env, self).__init__(past_frames=past_frames, l2_penalty=l2_penalty)
+    def __init__(self, past_frames=4, l2_penalty=False, render_mode='rgb_array'):
+        super(TiltedCustomReacher2Env, self).__init__(past_frames=past_frames, l2_penalty=l2_penalty, render_mode=render_mode)
 
     def viewer_setup(self):
         self.viewer.cam.trackbodyid = 0
@@ -75,8 +86,8 @@ class TiltedCustomReacher2Env(_CustomReacher2Env):
 
 
 class CustomReacher2Env(_CustomReacher2Env):
-    def __init__(self, past_frames=4, l2_penalty=False):
-        super(CustomReacher2Env, self).__init__(past_frames=past_frames, l2_penalty=l2_penalty)
+    def __init__(self, past_frames=4, l2_penalty=False, render_mode='rgb_array'):
+        super(CustomReacher2Env, self).__init__(past_frames=past_frames, l2_penalty=l2_penalty, render_mode=render_mode)
 
     def viewer_setup(self):
         self.viewer.cam.trackbodyid = 0
@@ -88,12 +99,22 @@ class CustomReacher2Env(_CustomReacher2Env):
 
 
 class _CustomReacher3Env(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
-    def __init__(self, past_frames=4, l2_penalty=False):
+    metadata = {
+        "render_modes": [
+            "human",
+            "rgb_array",
+            "depth_array",
+        ],
+        "render_fps": 50,
+    }
+    
+    def __init__(self, past_frames=4, l2_penalty=False, render_mode='rgb_array'):
         _FrameBufferEnv.__init__(self, past_frames)
         self._l2_penalty = l2_penalty
         utils.EzPickle.__init__(self)
         path_to_xml = os.path.join(os.path.dirname(__file__), 'assets/custom_reacher_3_link.xml')
-        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2)
+        observation_space = gym.spaces.Box(-np.inf, np.inf, (14, ))
+        mujoco_env.MujocoEnv.__init__(self, path_to_xml, 2, render_mode=render_mode, observation_space=observation_space)
 
     def step(self, a):
         vec = self.get_body_com("fingertip") - self.get_body_com("target")
@@ -106,7 +127,7 @@ class _CustomReacher3Env(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         self.do_simulation(a, self.frame_skip)
         ob = self._get_obs()
         done = False
-        return ob, reward, done, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
+        return ob, reward, done, False, dict(reward_dist=reward_dist, reward_ctrl=reward_ctrl)
 
     def reset_model(self):
         qpos = self.np_random.uniform(low=-0.1, high=0.1, size=self.model.nq) + self.init_qpos.flat
@@ -122,12 +143,12 @@ class _CustomReacher3Env(mujoco_env.MujocoEnv, utils.EzPickle, _FrameBufferEnv):
         return self._get_obs()
 
     def _get_obs(self):
-        theta = self.sim.data.qpos.flat[:3]
+        theta = self.data.qpos.flat[:3]
         return np.concatenate([
             np.cos(theta),
             np.sin(theta),
-            self.sim.data.qpos.flat[3:],
-            self.sim.data.qvel.flat[:3],
+            self.data.qpos.flat[3:],
+            self.data.qvel.flat[:3],
             self.get_body_com("fingertip") - self.get_body_com("target")
         ])
 

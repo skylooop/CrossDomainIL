@@ -53,6 +53,31 @@ def collect_expert(cfg: DictConfig) -> None:
         episode_limit = 1000
         env = CustomAntUMazeSize3Env()
         
+    elif cfg.env.name == 'InvertedPendulum-v2':
+        from envs.envs import ExpertInvertedPendulumEnv
+        env = ExpertInvertedPendulumEnv()
+        episode_limit = 1000
+        
+    elif cfg.env.name == 'InvertedDoublePendulum-v2':
+        from envs.envs import ExpertInvertedDoublePendulumEnv
+        env = ExpertInvertedDoublePendulumEnv()
+        episode_limit = 1000
+        
+    elif cfg.env.name == 'Reacher2-v2':
+        from envs.more_envs import CustomReacher2Env
+        env = CustomReacher2Env(l2_penalty=True)
+        episode_limit = 50
+        
+    elif cfg.env.name == 'Reacher3-v2':
+        from envs.more_envs import CustomReacher3Env
+        env = CustomReacher3Env(l2_penalty=True)
+        episode_limit = 50
+        
+    elif cfg.env.name == 'HalfCheetah-v2':
+        from envs.envs import ExpertHalfCheetahNCEnv
+        env = ExpertHalfCheetahNCEnv()
+        episode_limit = 1000
+        
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
     env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda _: _ % cfg.video_log_interval == 0)# and _ > cfg.video_log_interval)
@@ -61,7 +86,6 @@ def collect_expert(cfg: DictConfig) -> None:
                                                      actions=env.action_space.sample()[None])
     replay_buffer = ReplayBuffer(env.observation_space, env.action_space, cfg.algo.buffer_size)
     
-    eval_returns = []
     (observation, info), done = env.reset(), False
     
     for i in tqdm(range(1, cfg.max_steps + 1), smoothing=0.1):
