@@ -7,6 +7,8 @@ defaults:
   - logger: wandb
 
 seed: 42
-max_steps: 1_000_000
+max_steps: 1_000
 log_interval: 10_000
 video_log_interval: 10
+eval_episodes: 10
+eval_interval: 1_000

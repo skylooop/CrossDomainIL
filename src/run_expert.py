@@ -46,42 +46,53 @@ def collect_expert(cfg: DictConfig) -> None:
     if cfg.env.name == "PointUMaze":
         from envs.maze_envs import CustomPointUMazeSize3Env
         env = CustomPointUMazeSize3Env()
+        eval_env = CustomPointUMazeSize3Env()
         episode_limit = 1000
         
     elif cfg.env.name == "PointAntUMaze":
         from envs.maze_envs import CustomAntUMazeSize3Env
         episode_limit = 1000
         env = CustomAntUMazeSize3Env()
+        eval_env = CustomAntUMazeSize3Env()
         
     elif cfg.env.name == 'InvertedPendulum-v2':
         from envs.envs import ExpertInvertedPendulumEnv
         env = ExpertInvertedPendulumEnv()
+        eval_env = ExpertInvertedPendulumEnv()
         episode_limit = 1000
         
     elif cfg.env.name == 'InvertedDoublePendulum-v2':
         from envs.envs import ExpertInvertedDoublePendulumEnv
         env = ExpertInvertedDoublePendulumEnv()
+        eval_env = ExpertInvertedDoublePendulumEnv()
         episode_limit = 1000
         
     elif cfg.env.name == 'Reacher2-v2':
         from envs.more_envs import CustomReacher2Env
         env = CustomReacher2Env(l2_penalty=True)
+        eval_env = CustomReacher2Env(l2_penalty=True)
         episode_limit = 50
         
     elif cfg.env.name == 'Reacher3-v2':
         from envs.more_envs import CustomReacher3Env
         env = CustomReacher3Env(l2_penalty=True)
+        eval_env = CustomReacher3Env(l2_penalty=True)
         episode_limit = 50
         
     elif cfg.env.name == 'HalfCheetah-v2':
         from envs.envs import ExpertHalfCheetahNCEnv
         env = ExpertHalfCheetahNCEnv()
+        eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
         
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
-    env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda _: _ % cfg.video_log_interval == 0)# and _ > cfg.video_log_interval)
-        
+    env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda _: _ % cfg.video_log_interval == 0)
+    
+    eval_env = TimeLimit(env, max_episode_steps=episode_limit)
+    eval_env = RecordEpisodeStatistics(env)
+    eval_env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda _: _ % cfg.video_log_interval == 0)
+    
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     replay_buffer = ReplayBuffer(env.observation_space, env.action_space, cfg.algo.buffer_size)
@@ -120,6 +131,50 @@ def collect_expert(cfg: DictConfig) -> None:
                            f"Training/Entropy": update_info['entropy'],
                            f"Training/Temperature": update_info['temperature'],
                            f"Training/Temp loss": update_info['temp_loss']}, step=i)
+        if i % cfg.eval_interval == 0:
+            eval_stats = evaluate(expert_agent, eval_env, cfg.eval_episodes)
+            wandb.log({"Evaluation/rewards": eval_stats['r'],
+                       "Evaluation/length": eval_stats['l']})
+            
+def evaluate(agent, env, num_episodes: int, visual: bool = False):
+    stats = {'r': [], 'l': [], 't': []}
+    successes = None
+    obs, nobs, rews, acts, dones, viz_obs = [], [], [], [], []
+    
+    for _ in range(num_episodes):
+        (observation, info), done = env.reset(), False
+        while not done:
+            action = agent.sample_actions(observation, temperature=0.0)
+            obs.append(observation)
+            acts.append(action)
+            observation, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            nobs.append(observation)
+            rews.append(reward)
+            dones.append(done)
+            
+            if visual:
+                viz_obs.append(env._get_obs())
+        for k in stats.keys():
+            stats[k].append(info['episode'][k])
+
+        if 'is_success' in info:
+            if successes is None:
+                successes = 0.0
+            successes += info['is_success']
+    obs = np.stack(obs)
+    nobs = np.stack(nobs)
+    rews = np.array(rews)
+    dones = np.array(dones)
+    acts = np.stack(acts)
+    
+    for k, v in stats.items():
+        stats[k] = np.mean(v)
+
+    if successes is not None:
+        stats['success'] = successes / num_episodes
+    return stats
+
 if __name__ == "__main__":
     try:
         collect_expert()
