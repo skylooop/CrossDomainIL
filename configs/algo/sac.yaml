@@ -1,5 +1,6 @@
 _target_: agents.sac.SAC
 _partial_: True
+
 ## FROM D3IL paper
 name: SAC
 seed: 42
@@ -9,5 +10,27 @@ init_random_samples: 1_000
 start_training: 512
 updates_per_step: 1
 batch_size: 256
+discount: 0.99
+tau: 0.005
+init_temperature: 1.0
+backup_entropy: True
+target_entropy: null
+target_update_period: 1
+init_mean: null
+policy_final_fc_init_scale: 1.0
+
+actor_lr: 3e-4
+critic_lr: 3e-4
+temp_lr: 3e-4
+
+actor_def: 
+  _target_: networks.policies.NormalTanhPolicy
+  _partial_: True
+  hidden_dims: [256, 256]
+
+critic_def:
+  _target_: networks.critic_net.DoubleCritic
+  hidden_dims: [256, 256]
+  
 
 

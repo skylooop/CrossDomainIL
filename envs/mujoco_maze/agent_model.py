@@ -18,7 +18,8 @@ class AgentModel(ABC, MujocoEnv, EzPickle):
     def __init__(self, file_path: str, frame_skip: int, observation_space: Space, **kwargs) -> None:
         self.viewer = None
         self._viewers = {}
-        MujocoEnv.__init__(self, file_path, frame_skip, observation_space, **kwargs)
+        self.render_mode = kwargs.pop('render_mode')
+        MujocoEnv.__init__(self, file_path, frame_skip, observation_space, render_mode='rgb_array', **kwargs)
         EzPickle.__init__(self)
 
     def close(self):

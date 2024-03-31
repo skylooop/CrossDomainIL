@@ -39,7 +39,7 @@ class PointEnv(AgentModel):
         super().__init__(file_path, 1, observation_space, **kwargs)
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, dict]:
-        qpos = self.data.data.qpos.copy()
+        qpos = self.data.qpos.copy()
         qpos[2] += action[1]
         # Clip orientation
         if qpos[2] < -np.pi:
@@ -55,7 +55,7 @@ class PointEnv(AgentModel):
         for _ in range(0, self.frame_skip):
             mujoco.mj_step(self.model, self.data)
         next_obs = self._get_obs()
-        return next_obs, 0.0, False, {}
+        return next_obs, 0.0, False, False, {}
 
     def _get_obs(self):
         return np.concatenate(

@@ -1,0 +1,38 @@
+seed: 42
+max_steps: 1000000
+log_interval: 10000
+video_log_interval: 10000
+env:
+  name: PointUMaze
+algo:
+  _target_: agents.sac.SAC
+  _partial_: true
+  name: SAC
+  seed: 42
+  buffer_size: 1000000
+  init_random_samples: 1000
+  start_training: 512
+  updates_per_step: 1
+  batch_size: 256
+  discount: 0.99
+  tau: 0.005
+  init_temperature: 1.0
+  backup_entropy: true
+  target_entropy: null
+  target_update_period: 1
+  init_mean: null
+  policy_final_fc_init_scale: 1.0
+  actor_lr: 0.0003
+  critic_lr: 0.0003
+  temp_lr: 0.0003
+  actor_def:
+    _target_: networks.policies.NormalTanhPolicy
+    _partial_: true
+    hidden_dims:
+    - 256
+    - 256
+  critic_def:
+    _target_: networks.critic_net.DoubleCritic
+    hidden_dims:
+    - 256
+    - 256

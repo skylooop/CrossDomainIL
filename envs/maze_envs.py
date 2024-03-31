@@ -12,6 +12,7 @@ class _CustomUMazeEnv(MazeEnv, utils.EzPickle, _FrameBufferEnv):
     def __init__(self, model_cls, maze_task, maze_size_scaling, inner_reward_scaling, render_mode, past_frames=4):
         _FrameBufferEnv.__init__(self, past_frames)
         self._initialized = False
+        self.render_mode = render_mode
         utils.EzPickle.__init__(self)
         MazeEnv.__init__(self,
                          model_cls=model_cls,
@@ -25,7 +26,7 @@ class _CustomUMazeEnv(MazeEnv, utils.EzPickle, _FrameBufferEnv):
         if self.wrapped_env.MANUAL_COLLISION:
             old_pos = self.wrapped_env.get_xy()
             old_objballs = self._objball_positions()
-            inner_next_obs, inner_reward, _, info = self.wrapped_env.step(action)
+            inner_next_obs, inner_reward, _, _, info = self.wrapped_env.step(action)
             new_pos = self.wrapped_env.get_xy()
             new_objballs = self._objball_positions()
             # Checks that the new_position is in the wall
@@ -54,15 +55,15 @@ class _CustomUMazeEnv(MazeEnv, utils.EzPickle, _FrameBufferEnv):
         inner_reward = self._inner_reward_scaling * inner_reward
         outer_reward = self._task.reward(next_obs)
         # done = self._task.termination(next_obs['obs'])
-        done = self._task.termination(next_obs)
+        terminated = self._task.termination(next_obs)
         info["position"] = self.wrapped_env.get_xy()
         info["inner_reward"] = inner_reward
         info["outer_reward"] = outer_reward
-        return next_obs, inner_reward + outer_reward, done, info
+        return next_obs, inner_reward + outer_reward, terminated, False, info
 
-    def reset(self):
+    def reset(self, seed, options):
         self.t = 0
-        self.wrapped_env.reset()
+        self.wrapped_env.reset(seed=seed)
         # Samples a new goal
         if self._task.sample_goals():
             self.set_marker()
@@ -73,7 +74,7 @@ class _CustomUMazeEnv(MazeEnv, utils.EzPickle, _FrameBufferEnv):
 
         if self._initialized:
             self._reset_buffer()
-        return self._get_obs()
+        return self._get_obs(), None
 
 
 class CustomPointUMazeSize3Env(_CustomUMazeEnv):
