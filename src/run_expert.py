@@ -86,11 +86,10 @@ def collect_expert(cfg: DictConfig) -> None:
         episode_limit = 1000
         
     env = TimeLimit(env, max_episode_steps=episode_limit)
-    #env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda x: x % cfg.video_log_interval == 0)
-    #env = RecordEpisodeStatistics(env)
+    env = RecordEpisodeStatistics(env)
     
     eval_env = TimeLimit(eval_env, max_episode_steps=episode_limit)
-    eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: x % (cfg.save_expert_episodes // 2) == 0)
+    eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: x % cfg.save_video_each_ep == 0)
     eval_env = RecordEpisodeStatistics(eval_env, deque_size=cfg.save_expert_episodes)
     
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
@@ -99,7 +98,7 @@ def collect_expert(cfg: DictConfig) -> None:
     
     (observation, info), done = env.reset(), False
     
-    for i in tqdm(range(1, cfg.max_steps + 1), smoothing=0.1):
+    for i in tqdm(range(1, cfg.max_steps + 1)):
         if i < cfg.algo.start_training:
             action = env.action_space.sample()
         else:
@@ -136,7 +135,7 @@ def collect_expert(cfg: DictConfig) -> None:
             wandb.log({"Evaluation/rewards": eval_stats['r'],
                        "Evaluation/length": eval_stats['l']})
     env.close()
-    save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=True)
+    save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=False)
     
 def save_expert(agent, env, num_episodes: int, visual: bool = False):
     stats = {'r': [], 'l': [], 't': []}

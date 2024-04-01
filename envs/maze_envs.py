@@ -63,7 +63,7 @@ class _CustomUMazeEnv(MazeEnv, utils.EzPickle, _FrameBufferEnv):
 
     def reset(self, seed, options):
         self.t = 0
-        self.wrapped_env.reset(seed=seed)
+        self.wrapped_env.reset(seed=seed, options=options)
         # Samples a new goal
         if self._task.sample_goals():
             self.set_marker()

@@ -11,7 +11,6 @@ import mujoco
 
 from envs.mujoco_maze.agent_model import AgentModel
 
-
 class PointEnv(AgentModel):
     metadata = {
         "render_modes": [
