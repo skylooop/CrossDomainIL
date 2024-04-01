@@ -86,12 +86,12 @@ def collect_expert(cfg: DictConfig) -> None:
         episode_limit = 1000
         
     env = TimeLimit(env, max_episode_steps=episode_limit)
-    env = RecordEpisodeStatistics(env)
-    env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda _: _ % cfg.video_log_interval == 0)
+    #env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda x: x % cfg.video_log_interval == 0)
+    #env = RecordEpisodeStatistics(env)
     
-    eval_env = TimeLimit(env, max_episode_steps=episode_limit)
-    eval_env = RecordEpisodeStatistics(env)
-    eval_env = RecordVideo(env, video_folder='agent_video', episode_trigger=lambda _: _ % cfg.video_log_interval == 0)
+    eval_env = TimeLimit(eval_env, max_episode_steps=episode_limit)
+    eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: x % (cfg.save_expert_episodes // 2) == 0)
+    eval_env = RecordEpisodeStatistics(eval_env, deque_size=cfg.save_expert_episodes)
     
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
@@ -135,13 +135,15 @@ def collect_expert(cfg: DictConfig) -> None:
             eval_stats = evaluate(expert_agent, eval_env, cfg.eval_episodes)
             wandb.log({"Evaluation/rewards": eval_stats['r'],
                        "Evaluation/length": eval_stats['l']})
-            
-def evaluate(agent, env, num_episodes: int, visual: bool = False):
+    env.close()
+    save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=True)
+    
+def save_expert(agent, env, num_episodes: int, visual: bool = False):
     stats = {'r': [], 'l': [], 't': []}
     successes = None
-    obs, nobs, rews, acts, dones, viz_obs = [], [], [], [], []
+    obs, nobs, rews, acts, dones, viz_obs = [], [], [], [], [], []
     
-    for _ in range(num_episodes):
+    for _ in tqdm(range(num_episodes), desc="Running trained expert..."):
         (observation, info), done = env.reset(), False
         while not done:
             action = agent.sample_actions(observation, temperature=0.0)
@@ -154,7 +156,7 @@ def evaluate(agent, env, num_episodes: int, visual: bool = False):
             dones.append(done)
             
             if visual:
-                viz_obs.append(env._get_obs())
+                viz_obs.append(env.get_ims())
         for k in stats.keys():
             stats[k].append(info['episode'][k])
 
@@ -162,12 +164,49 @@ def evaluate(agent, env, num_episodes: int, visual: bool = False):
             if successes is None:
                 successes = 0.0
             successes += info['is_success']
+    env.close()       
     obs = np.stack(obs)
     nobs = np.stack(nobs)
     rews = np.array(rews)
     dones = np.array(dones)
     acts = np.stack(acts)
     
+    for k, v in stats.items():
+        stats[k] = np.mean(v)
+
+    if successes is not None:
+        stats['success'] = successes / num_episodes
+    os.makedirs(name='saved_expert')
+    np.save("saved_expert/trained_expert.npy", arr={
+        'observations': obs,
+        'next_observations': nobs,
+        'rewards': rews,
+        'dones': dones,
+        'actions': acts,
+        'images': viz_obs if visual else None
+    })
+
+def evaluate(agent, env, num_episodes: int):
+    stats = {'r': [], 'l': [], 't': []}
+    successes = None
+    
+    for _ in tqdm(range(num_episodes), desc="Evaluating agent.."):
+        (observation, info), done = env.reset(), False
+        while not done:
+            action = agent.sample_actions(observation, temperature=0.0)
+            observation, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            
+        for k in stats.keys():
+            stats[k].append(info['episode'][k])
+
+        if 'is_success' in info:
+            if successes is None:
+                successes = 0.0
+            successes += info['is_success']
+    
+    env.close()
+           
     for k, v in stats.items():
         stats[k] = np.mean(v)
 
