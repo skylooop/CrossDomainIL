@@ -89,7 +89,7 @@ def collect_expert(cfg: DictConfig) -> None:
     env = RecordEpisodeStatistics(env)
     
     eval_env = TimeLimit(eval_env, max_episode_steps=episode_limit)
-    eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: x % cfg.save_video_each_ep == 0)
+    eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: (x + 1) % cfg.save_video_each_ep == 0)
     eval_env = RecordEpisodeStatistics(eval_env, deque_size=cfg.save_expert_episodes)
     
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
@@ -130,11 +130,11 @@ def collect_expert(cfg: DictConfig) -> None:
                            f"Training/Entropy": update_info['entropy'],
                            f"Training/Temperature": update_info['temperature'],
                            f"Training/Temp loss": update_info['temp_loss']}, step=i)
+                
         if i % cfg.eval_interval == 0:
             eval_stats = evaluate(expert_agent, eval_env, cfg.eval_episodes)
             wandb.log({"Evaluation/rewards": eval_stats['r'],
                        "Evaluation/length": eval_stats['l']})
-    env.close()
     save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=False)
     
 def save_expert(agent, env, num_episodes: int, visual: bool = False):
@@ -203,9 +203,6 @@ def evaluate(agent, env, num_episodes: int):
             if successes is None:
                 successes = 0.0
             successes += info['is_success']
-    
-    env.close()
-           
     for k, v in stats.items():
         stats[k] = np.mean(v)
 

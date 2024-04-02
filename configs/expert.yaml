@@ -2,14 +2,14 @@
 
 defaults:
   - _self_
-  - env: pointantumaze #pointantumaze # pointumaze
+  - env: pointumaze #pointantumaze # pointumaze
   - algo: sac
   - logger: wandb
 
-seed: 42
-max_steps: 50_000
+seed: 1488
+max_steps: 100_000
 log_interval: 5_000
 eval_episodes: 10
 eval_interval: 10_000
 save_expert_episodes: 20
-save_video_each_ep: 5
+save_video_each_ep: 10
