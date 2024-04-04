@@ -15,11 +15,12 @@ class AgentModel(ABC, MujocoEnv, EzPickle):
     RADIUS: Optional[float] = None
     OBJBALL_TYPE: Optional[str] = None
 
-    def __init__(self, file_path: str, frame_skip: int, observation_space: Space, **kwargs) -> None:
+    def __init__(self, file_path: str, default_camera_config, frame_skip: int, observation_space: Space, **kwargs) -> None:
         self.viewer = None
         self._viewers = {}
         self.render_mode = kwargs.pop('render_mode')
-        MujocoEnv.__init__(self, file_path, frame_skip, observation_space, render_mode='rgb_array', **kwargs)
+        MujocoEnv.__init__(self, file_path, frame_skip, observation_space,
+                           render_mode='rgb_array', default_camera_config=default_camera_config, **kwargs)
         EzPickle.__init__(self)
 
     def close(self):

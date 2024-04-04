@@ -29,12 +29,13 @@ class PointEnv(AgentModel):
     VELOCITY_LIMITS: float = 10.0
 
     def __init__(self, file_path: Optional[str] = None, **kwargs) -> None:
+        default_camera_config = {"distance": 11, "elevation": -90, "lookat": np.array((3, 3, 3))}
         high = np.inf * np.ones(6, dtype=np.float32)
         high[3:] = self.VELOCITY_LIMITS * 1.2
         high[self.ORI_IND] = np.pi
         low = -high
         observation_space = gym.spaces.Box(low, high)
-        super().__init__(file_path, 1, observation_space, **kwargs)
+        super().__init__(file_path, default_camera_config, 1, observation_space, **kwargs)
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, dict]:
         qpos = self.data.qpos.copy()

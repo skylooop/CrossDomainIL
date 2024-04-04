@@ -97,45 +97,85 @@ def collect_expert(cfg: DictConfig) -> None:
     replay_buffer = ReplayBuffer(env.observation_space, env.action_space, cfg.algo.buffer_size)
     
     (observation, info), done = env.reset(), False
-    
-    for i in tqdm(range(1, cfg.max_steps + 1)):
-        if i < cfg.algo.start_training:
-            action = env.action_space.sample()
-        else:
-            action = expert_agent.sample_actions(observation)
-        next_observation, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        
-        if not done:
-            mask = 1.0
-        else:
-            mask = 0.0
-        replay_buffer.insert(observation, action, reward, mask, float(done),
-                             next_observation)
-        observation = next_observation
-        
-        if done:
-            wandb.log({f"Training/rewards": info['episode']['r'],
-                       f"Training/episode length": info['episode']['l']}, step=i)
-            (observation, info), done = env.reset(), False
+    if cfg.train_expert:
+        for i in tqdm(range(1, cfg.max_steps + 1)):
+            if i < cfg.algo.start_training:
+                action = env.action_space.sample()
+            else:
+                action = expert_agent.sample_actions(observation)
+            next_observation, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             
-        if i >= cfg.algo.start_training:
-            for _ in range(cfg.algo.updates_per_step):
-                batch = replay_buffer.sample(cfg.algo.batch_size)
-                update_info = expert_agent.update(batch)
-
-            if i % cfg.log_interval == 0:
-                wandb.log({f"Training/Critic loss": update_info['critic_loss'],
-                           f"Training/Actor loss": update_info['actor_loss'],
-                           f"Training/Entropy": update_info['entropy'],
-                           f"Training/Temperature": update_info['temperature'],
-                           f"Training/Temp loss": update_info['temp_loss']}, step=i)
+            if not done:
+                mask = 1.0
+            else:
+                mask = 0.0
+            replay_buffer.insert(observation, action, reward, mask, float(done),
+                                next_observation)
+            observation = next_observation
+            
+            if done:
+                wandb.log({f"Training/rewards": info['episode']['r'],
+                        f"Training/episode length": info['episode']['l']}, step=i)
+                (observation, info), done = env.reset(), False
                 
-        if i % cfg.eval_interval == 0:
-            eval_stats = evaluate(expert_agent, eval_env, cfg.eval_episodes)
-            wandb.log({"Evaluation/rewards": eval_stats['r'],
-                       "Evaluation/length": eval_stats['l']})
-    save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=False)
+            if i >= cfg.algo.start_training:
+                for _ in range(cfg.algo.updates_per_step):
+                    batch = replay_buffer.sample(cfg.algo.batch_size)
+                    update_info = expert_agent.update(batch)
+
+                if i % cfg.log_interval == 0:
+                    wandb.log({f"Training/Critic loss": update_info['critic_loss'],
+                            f"Training/Actor loss": update_info['actor_loss'],
+                            f"Training/Entropy": update_info['entropy'],
+                            f"Training/Temperature": update_info['temperature'],
+                            f"Training/Temp loss": update_info['temp_loss']}, step=i)
+                    
+            if i % cfg.eval_interval == 0:
+                eval_stats = evaluate(expert_agent, eval_env, cfg.eval_episodes)
+                wandb.log({"Evaluation/rewards": eval_stats['r'],
+                        "Evaluation/length": eval_stats['l']})
+                
+        save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=False)
+        
+    print(f"Saving random policy")
+    save_random_policy(eval_env, 10, visual=False)
+    
+def save_random_policy(env, n_episodes, visual):
+    obs, nobs, rews, acts, dones, viz_obs = [], [], [], [], [], []
+    
+    for _ in tqdm(range(n_episodes), desc="Running random policy..."):
+        (observation, info), done = env.reset(), False
+        while not done:
+            action = env.action_space.sample()
+            obs.append(observation)
+            acts.append(action)
+            observation, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            nobs.append(observation)
+            rews.append(reward)
+            dones.append(done)
+            
+            if visual:
+                viz_obs.append(env.get_ims())
+                
+    env.close()       
+    obs = np.stack(obs)
+    nobs = np.stack(nobs)
+    rews = np.array(rews)
+    dones = np.array(dones)
+    acts = np.stack(acts)
+    
+    os.makedirs(name='saved_prior')
+    np.save("saved_prior/random_policy.npy", arr={
+        'observations': obs,
+        'next_observations': nobs,
+        'rewards': rews,
+        'dones': dones,
+        'actions': acts,
+        'images': viz_obs if visual else None
+    })
+    
     
 def save_expert(agent, env, num_episodes: int, visual: bool = False):
     stats = {'r': [], 'l': [], 't': []}

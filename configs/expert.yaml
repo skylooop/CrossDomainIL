@@ -2,7 +2,7 @@
 
 defaults:
   - _self_
-  - env: pointumaze #pointantumaze # pointumaze
+  - env: pointantumaze #pointantumaze # pointumaze
   - algo: sac
   - logger: wandb
 
@@ -13,3 +13,5 @@ eval_episodes: 10
 eval_interval: 10_000
 save_expert_episodes: 20
 save_video_each_ep: 10
+
+train_expert: False

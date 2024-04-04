@@ -57,11 +57,12 @@ class AntEnv(AgentModel):
         forward_reward_fn: ForwardRewardFn = forward_reward_vnorm,
         **kwargs
     ) -> None:
+        default_camera_config = {"distance": 11, "elevation": -90, "lookat": np.array((3, 3, 3))}
         self._forward_reward_weight = forward_reward_weight
         self._ctrl_cost_weight = ctrl_cost_weight
         self._forward_reward_fn = forward_reward_fn
         observation_space = gym.spaces.Box(-np.inf, np.inf, (30, ))
-        super().__init__(file_path, 5, observation_space=observation_space, **kwargs)
+        super().__init__(file_path, default_camera_config, 5, observation_space=observation_space, **kwargs)
 
     def _forward_reward(self, xy_pos_before: np.ndarray) -> Tuple[float, np.ndarray]:
         xy_pos_after = self.data.qpos[:2].copy()
@@ -136,13 +137,12 @@ class AntSize3Env(AntEnv):
         super().__init__(file_path, forward_reward_weight, ctrl_cost_weight, forward_reward_fn, **kwargs)
 
     def viewer_setup(self):
-        # size=3
         self.viewer.cam.trackbodyid = -1
-        self.viewer.cam.distance = 13.5
-        self.viewer.cam.elevation = -90
-        self.viewer.cam.lookat[0] = 3.
-        self.viewer.cam.lookat[1] = 3.
-        self.viewer.cam.lookat[2] = 0.
+        self.viewer.cam.distance = 5
+        self.viewer.cam.elevation = -110
+        self.viewer.cam.lookat[0] = 4.
+        self.viewer.cam.lookat[1] = 2.
+        self.viewer.cam.lookat[2] = 5.
 
 
 class AntSize4Env(AntEnv):
