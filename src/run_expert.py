@@ -96,7 +96,7 @@ def collect_expert(cfg: DictConfig) -> None:
                                                      actions=env.action_space.sample()[None])
     replay_buffer = ReplayBuffer(env.observation_space, env.action_space, cfg.algo.buffer_size)
     
-    (observation, info), done = env.reset(), False
+    (observation, info), done = env.reset(seed=cfg.seed), False
     if cfg.train_expert:
         for i in tqdm(range(1, cfg.max_steps + 1)):
             if i < cfg.algo.start_training:

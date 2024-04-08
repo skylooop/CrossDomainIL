@@ -42,7 +42,20 @@ def merge_trajectories(trajs):
     return np.stack(observations), np.stack(actions), np.stack(
         rewards), np.stack(masks), np.stack(dones_float), np.stack(
             next_observations)
-        
+
+def _sample(
+    dataset_dict, indx: np.ndarray
+):
+    if isinstance(dataset_dict, np.ndarray):
+        return dataset_dict[indx]
+    elif isinstance(dataset_dict, dict):
+        batch = {}
+        for k, v in dataset_dict.items():
+            batch[k] = _sample(v, indx)
+    else:
+        raise TypeError("Unsupported type.")
+    return batch
+    
 class Dataset:
     def __init__(self, observations: np.ndarray, actions: np.ndarray,
                  rewards: np.ndarray, masks: np.ndarray,
@@ -64,6 +77,10 @@ class Dataset:
                      masks=self.masks[indx],
                      next_observations=self.next_observations[indx])
 
+    def get_iter(self, batch_size):
+        for i in range(self.size // batch_size):
+            yield self.sample(batch_size)
+            
     def get_initial_states(
         self,
         and_action: bool = False
