@@ -18,6 +18,7 @@ target_entropy: null
 target_update_period: 1
 init_mean: null
 policy_final_fc_init_scale: 1.0
+neural_ot: True
 
 actor_lr: 3e-4
 critic_lr: 3e-4

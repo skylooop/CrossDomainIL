@@ -2,9 +2,11 @@ import jax
 import jax.numpy as jnp
 
 from datasets.dataset import Batch
-from networks.common import Model
+from networks.common import Model, LayerNormMLP
 from networks.critic_net import DoubleCritic
 from networks.policies import _sample_actions
+
+from neuralot.neuraldual import W2NeuralDualCustom
 
 import optax
 import flax.linen as nn
@@ -134,7 +136,7 @@ class SAC:
         self.target_entropy = kwargs.pop('target_entropy')
         self.target_update_period = kwargs.pop('target_update_period')
         self.backup_entropy = kwargs.pop('backup_entropy')
-        
+        self.neural_ot = kwargs.pop('neural_ot')
         self.observations = observations
         self.actions = actions
 
@@ -173,10 +175,9 @@ class SAC:
         self.rng = rng
         
         return jnp.clip(actions, -1, 1)
-
+    
     def update(self, batch: Batch) -> InfoDict:
         self.step += 1
-
         new_rng, new_actor, new_critic, new_target_critic, new_temp, info = _update_jit(
             self.rng, self.actor, self.critic, self.target_critic, self.temp,
             batch, self.discount, self.tau, self.target_entropy,
