@@ -1,10 +1,11 @@
 import numpy as np
 from datasets.replay_buffer import ReplayBuffer, Dataset
+import gymnasium as gym
 
-def prepare_buffers_for_il(cfg, observation_space, action_space):
-    expert_source = np.load(cfg.imitation_env.path_to_expert, allow_pickle=True)
-    expert_random = np.load(cfg.imitation_env.path_to_random_expert, allow_pickle=True)
-    source_random = np.load(cfg.imitation_env.path_to_random_target, allow_pickle=True)
+def prepare_buffers_for_il(cfg):
+    expert_source = np.load(cfg.imitation_env.path_to_expert, allow_pickle=True).item()
+    expert_random = np.load(cfg.imitation_env.path_to_random_expert, allow_pickle=True).item()
+    source_random = np.load(cfg.imitation_env.path_to_random_target, allow_pickle=True).item()
     
     source_dataset = Dataset(observations=expert_source['observations'],
                            actions=expert_source['actions'],
@@ -29,8 +30,11 @@ def prepare_buffers_for_il(cfg, observation_space, action_space):
                            masks=1.0 - source_random['dones'],
                            next_observations=source_random['next_observations'],
                            size=source_random['observations'].shape[0])
-    source_expert_buffer = ReplayBuffer(observation_space=observation_space, action_space=action_space, capacity=cfg.algo.buffer_size).initialize_with_dataset(source_dataset)
-    source_random_buffer = ReplayBuffer(observation_space=observation_space, action_space=action_space, capacity=cfg.algo.buffer_size).initialize_with_dataset(non_expert_source_dataset)
-    target_random_buffer = ReplayBuffer(observation_space=observation_space, action_space=action_space, capacity=cfg.algo.buffer_size).initialize_with_dataset(target_dataset_random)
+    source_expert_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
+    source_expert_buffer.initialize_with_dataset(source_dataset)
+    source_random_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
+    source_random_buffer.initialize_with_dataset(non_expert_source_dataset)
+    target_random_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(target_dataset_random.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(target_dataset_random.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
+    target_random_buffer.initialize_with_dataset(target_dataset_random)
     
     return source_expert_buffer, source_random_buffer, target_random_buffer

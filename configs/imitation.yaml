@@ -2,7 +2,6 @@
 
 defaults:
   - _self_
-  - algo: 
   - imitation_env: pointantumaze #pointantumaze # pointumaze
   - algo: sac
   - logger: wandb

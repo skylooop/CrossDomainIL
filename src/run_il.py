@@ -11,6 +11,9 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 import numpy as np
 import jax
+import jax.numpy as jnp
+from ott.tools.sinkhorn_divergence import sinkhorn_divergence
+from ott.geometry import pointcloud
 import random
 import optax
 from ott.neural import models
@@ -21,14 +24,26 @@ ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, ind
 
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
-from neuralot.neuraldual import W2NeuralDualCustom, NotNetwork, JointAgent
+from agents.notdual import JointAgent
 from networks.common import LayerNormMLP, TrainState
-from datasets.replay_buffer import ReplayBuffer, Dataset
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.record_video import RecordVideo
 
+
+@jax.jit
+def sinkhorn_loss(
+    x: jnp.ndarray, y: jnp.ndarray, epsilon: float = 0.001
+) -> float:
+    """Computes transport between (x, a) and (y, b) via Sinkhorn algorithm."""
+    a = jnp.ones(len(x)) / len(x)
+    b = jnp.ones(len(y)) / len(y)
+
+    sdiv = sinkhorn_divergence.sinkhorn_divergence(
+        pointcloud.PointCloud, x, y, epsilon=epsilon, a=a, b=b
+    )
+    return sdiv.divergence
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
 def collect_expert(cfg: DictConfig) -> None:
@@ -36,16 +51,16 @@ def collect_expert(cfg: DictConfig) -> None:
     # python src/run_il.py hydra.job.chdir=True
     #################
     
-    assert cfg.env.name in SUPPORTED_ENVS
+    assert cfg.imitation_env.name in SUPPORTED_ENVS
     
-    print(f"Collecting Expert data using {cfg.algo.name} on {cfg.env.name} env")
+    print(f"Collecting Expert data using {cfg.algo.name} on {cfg.imitation_env.name} env")
     print(OmegaConf.to_yaml(cfg))
     
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
         project=cfg.logger.project,
         config=dict(cfg),
-        group="expert_" + f"{cfg.env.name}_{cfg.algo.name}",
+        group="expert_" + f"{cfg.imitation_env.name}_{cfg.algo.name}",
     )
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
@@ -92,7 +107,7 @@ def collect_expert(cfg: DictConfig) -> None:
         eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
     
-    source_expert_buffer, source_random_buffer, target_random_buffer = prepare_buffers_for_il(cfg=cfg, observation_space=env.observation_space, action_space=env.action_space)
+    source_expert_buffer, source_random_buffer, target_random_buffer = prepare_buffers_for_il(cfg=cfg)
     
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
@@ -104,35 +119,49 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
-    rng = jax.random.PRNGKey(cfg.seed)
+    # TODO: Make call from hydra
+    # neural_ot_agent = hydra.utils.instantiate(cfg.ot_algo)
     hidden_dims = [32, 16, 8, 2]
-    neural_f = models.MLP(dim_hidden=[32, 32, 32, 32],is_potential=True)
-    neural_g = models.MLP(dim_hidden=[32, 32, 32, 32],is_potential=True)
-    optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
-    optimizer_g = optimizer_f
-
-    neural_dual = W2NeuralDualCustom(
-        dim_data=hidden_dims[-1] * 2, 
-        neural_f=neural_f,
-        optimizer_f=optimizer_f,
-        optimizer_g=optimizer_g,
-        neural_g=neural_g,
-        num_train_iters=2_000
-    )
     encoder_expert = LayerNormMLP(hidden_dims=hidden_dims)
     encoder_agent = LayerNormMLP(hidden_dims=hidden_dims)
-    net_def = NotNetwork(encoders={
-        'expert_encoder': encoder_expert,
-        'agent_encoder': encoder_agent}, expert_loss_coef=1.0)
 
-    network = TrainState.create(
-        model_def=net_def,
-        params=net_def.init(rng, source_expert_buffer.observations[0], target_random_buffer.observations[0])['params'],
-        tx=optax.adam(learning_rate=1e-4)
+    neural_f = models.MLP(
+        dim_hidden=[32, 32, 32, 32],
+        is_potential=True,
     )
-    neural_ot_agent = JointAgent(network=network)
+    neural_g = models.MLP(
+        dim_hidden=[32, 32, 32, 32],
+        is_potential=True,
+    )
+    
+    optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+    optimizer_g = optimizer_f
+
+    agent = JointAgent(
+        encoder_agent, 
+        encoder_expert, 
+        source_expert_buffer.observations.shape[-1], 
+        eval_env.observation_space.shape[0],
+        hidden_dims[-1],
+        neural_f,
+        neural_g,
+        optimizer_f,
+        optimizer_g)
     
     (observation, info), done = env.reset(seed=cfg.seed), False
+    
+    # PRETRAIN NOT
+    for i in tqdm(range(500)):
+        agent_data = target_random_buffer.sample(256)
+        expert_data = source_expert_buffer.sample(256)
+        random_data = source_random_buffer.sample(256)
+        loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = agent.optimize_not(agent_data, expert_data, random_data)
+
+        if i % 100 == 0:
+            se = agent.encoders_state(expert_data.observations, method='encode_expert')
+            sa = agent.encoders_state(agent_data.observations, method='encode_agent')
+            sink = sinkhorn_loss(sa, se)
+            print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
     
     for i in tqdm(range(1, cfg.max_steps + 1)):
         if i < cfg.algo.start_training:
@@ -157,11 +186,19 @@ def collect_expert(cfg: DictConfig) -> None:
             
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                expert_data = source_expert_buffer.sample(cfg.algo.batch_size)
-                agent_data = target_random_buffer.sample(cfg.algo.batch_size)
-                if i % 10 == 0:
-                    neural_ot_agent, update_info_encoders = neural_ot_agent.optimize_encoders(neural_dual, agent_data, expert_data)
-                neural_dual, update_info_not = neural_ot_agent.optimize_not(neural_dual, agent_data, expert_data)
+                agent_data = target_random_buffer.sample(256)
+                expert_data = source_expert_buffer.sample(256)
+                random_data = source_random_buffer.sample(256)
+                loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = agent.optimize_not(agent_data, expert_data, random_data)
+                if i % 5 == 0:
+                    info = agent.optimize_encoders(agent_data, expert_data, random_data)
+                
+                if i % 50 == 0:
+                    print(info)
+                    se = agent.encoders_state(expert_data.observations, method='encode_expert')
+                    sa = agent.encoders_state(agent_data.observations, method='encode_agent')
+                    sink = sinkhorn_loss(sa, se)
+                    print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
                 actor_update_info = agent.update(agent_data)
 
             if i % cfg.log_interval == 0:

@@ -6,8 +6,6 @@ from networks.common import Model, LayerNormMLP
 from networks.critic_net import DoubleCritic
 from networks.policies import _sample_actions
 
-from neuralot.neuraldual import W2NeuralDualCustom
-
 import optax
 import flax.linen as nn
 

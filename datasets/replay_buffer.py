@@ -35,7 +35,7 @@ class ReplayBuffer(Dataset):
         self.capacity = capacity
 
     def initialize_with_dataset(self, dataset: Dataset,
-                                num_samples: Optional[int]):
+                                num_samples: Optional[int] = None):
         assert self.insert_index == 0, 'Can insert a batch online in an empty replay buffer.'
 
         dataset_size = len(dataset.observations)
