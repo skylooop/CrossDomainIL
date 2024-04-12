@@ -11,6 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 import numpy as np
 import jax
+import functools
 import jax.numpy as jnp
 from ott.tools.sinkhorn_divergence import sinkhorn_divergence
 from ott.geometry import pointcloud
@@ -40,10 +41,23 @@ def sinkhorn_loss(
     a = jnp.ones(len(x)) / len(x)
     b = jnp.ones(len(y)) / len(y)
 
-    sdiv = sinkhorn_divergence.sinkhorn_divergence(
+    sdiv = sinkhorn_divergence(
         pointcloud.PointCloud, x, y, epsilon=epsilon, a=a, b=b
     )
     return sdiv.divergence
+
+@functools.partial(jax.jit, static_argnums=0)
+def compute_reward_from_not(not_agent, expert_data, observation, next_observation):
+    se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+    se_next = not_agent.encoders_state(expert_data.next_observations, method='encode_expert')
+    expert_pairs = jnp.concatenate([se, se_next], axis=-1)
+    
+    sa = not_agent.encoders_state(observation, method='encode_agent')
+    sa_next = not_agent.encoders_state(next_observation, method='encode_agent')
+    agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
+    
+    reward = not_agent.neural_dual_pairs.to_dual_potentials().distance(agent_pairs, expert_pairs)
+    return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
 def collect_expert(cfg: DictConfig) -> None:
@@ -58,6 +72,7 @@ def collect_expert(cfg: DictConfig) -> None:
     
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
+        #mode="offline",
         project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.imitation_env.name}_{cfg.algo.name}",
@@ -137,29 +152,29 @@ def collect_expert(cfg: DictConfig) -> None:
     optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
     optimizer_g = optimizer_f
 
-    agent = JointAgent(
+    not_agent = JointAgent(
         encoder_agent, 
         encoder_expert, 
-        source_expert_buffer.observations.shape[-1], 
-        eval_env.observation_space.shape[0],
-        hidden_dims[-1],
-        neural_f,
-        neural_g,
-        optimizer_f,
-        optimizer_g)
+        agent_dim=eval_env.observation_space.shape[0],
+        expert_dim=source_expert_buffer.observations.shape[-1],
+        embed_dim=hidden_dims[-1],
+        neural_f=neural_f,
+        neural_g=neural_g,
+        optimizer_f=optimizer_f,
+        optimizer_g=optimizer_g)
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    for i in tqdm(range(500)):
+    for i in tqdm(range(3_000)):
         agent_data = target_random_buffer.sample(256)
         expert_data = source_expert_buffer.sample(256)
         random_data = source_random_buffer.sample(256)
-        loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = agent.optimize_not(agent_data, expert_data, random_data)
+        loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
 
         if i % 100 == 0:
-            se = agent.encoders_state(expert_data.observations, method='encode_expert')
-            sa = agent.encoders_state(agent_data.observations, method='encode_agent')
+            se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+            sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
             sink = sinkhorn_loss(sa, se)
             print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
     
@@ -175,7 +190,8 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.0
-        # add reward from not after some training?
+            
+        reward = compute_reward_from_not(not_agent, expert_data, observation, next_observation)
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -189,24 +205,25 @@ def collect_expert(cfg: DictConfig) -> None:
                 agent_data = target_random_buffer.sample(256)
                 expert_data = source_expert_buffer.sample(256)
                 random_data = source_random_buffer.sample(256)
-                loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = agent.optimize_not(agent_data, expert_data, random_data)
-                if i % 5 == 0:
-                    info = agent.optimize_encoders(agent_data, expert_data, random_data)
+                if i % 300 == 0 and i >= 300:
+                    loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+                if i % 700 == 0 and i >= 700:
+                    info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
                 
-                if i % 50 == 0:
+                if i % 2000 == 0 and i >= 2000:
                     print(info)
-                    se = agent.encoders_state(expert_data.observations, method='encode_expert')
-                    sa = agent.encoders_state(agent_data.observations, method='encode_agent')
+                    se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+                    sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
                     sink = sinkhorn_loss(sa, se)
                     print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
                 actor_update_info = agent.update(agent_data)
 
-            if i % cfg.log_interval == 0:
-                wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],
-                        f"Training/Actor loss": actor_update_info['actor_loss'],
-                        f"Training/Entropy": actor_update_info['entropy'],
-                        f"Training/Temperature": actor_update_info['temperature'],
-                        f"Training/Temp loss": actor_update_info['temp_loss']}, step=i)
+        if i % cfg.log_interval == 0:
+            wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],
+                    f"Training/Actor loss": actor_update_info['actor_loss'],
+                    f"Training/Entropy": actor_update_info['entropy'],
+                    f"Training/Temperature": actor_update_info['temperature'],
+                    f"Training/Temp loss": actor_update_info['temp_loss']}, step=i)
                 
         if i % cfg.eval_interval == 0:
             eval_stats = evaluate(agent, eval_env, cfg.eval_episodes)
