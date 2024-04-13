@@ -11,7 +11,6 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 import numpy as np
 import jax
-import functools
 import jax.numpy as jnp
 from ott.tools.sinkhorn_divergence import sinkhorn_divergence
 from ott.geometry import pointcloud
@@ -26,7 +25,7 @@ ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, ind
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
 from agents.notdual import JointAgent
-from networks.common import LayerNormMLP, TrainState
+from networks.common import LayerNormMLP
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from gymnasium.wrappers.time_limit import TimeLimit
@@ -46,17 +45,17 @@ def sinkhorn_loss(
     )
     return sdiv.divergence
 
-@functools.partial(jax.jit, static_argnums=0)
-def compute_reward_from_not(not_agent, expert_data, observation, next_observation):
-    se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-    se_next = not_agent.encoders_state(expert_data.next_observations, method='encode_expert')
+@jax.jit
+def compute_reward_from_not(encoders_state, potentials, expert_data, observation, next_observation):
+    se = encoders_state(expert_data.observations, method='encode_expert')
+    se_next = encoders_state(expert_data.next_observations, method='encode_expert')
     expert_pairs = jnp.concatenate([se, se_next], axis=-1)
     
-    sa = not_agent.encoders_state(observation, method='encode_agent')
-    sa_next = not_agent.encoders_state(next_observation, method='encode_agent')
+    sa = encoders_state(observation, method='encode_agent')
+    sa_next = encoders_state(next_observation, method='encode_agent')
     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
     
-    reward = not_agent.neural_dual_pairs.to_dual_potentials().distance(agent_pairs, expert_pairs)
+    reward = potentials.distance(agent_pairs, expert_pairs)
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -72,7 +71,7 @@ def collect_expert(cfg: DictConfig) -> None:
     
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
-        #mode="offline",
+        mode="offline",
         project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.imitation_env.name}_{cfg.algo.name}",
@@ -134,9 +133,7 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
-    # TODO: Make call from hydra
-    # neural_ot_agent = hydra.utils.instantiate(cfg.ot_algo)
-    hidden_dims = [32, 16, 8, 2]
+    hidden_dims = [8, 16, 32, 16, 8]
     encoder_expert = LayerNormMLP(hidden_dims=hidden_dims)
     encoder_agent = LayerNormMLP(hidden_dims=hidden_dims)
 
@@ -161,24 +158,29 @@ def collect_expert(cfg: DictConfig) -> None:
         neural_f=neural_f,
         neural_g=neural_g,
         optimizer_f=optimizer_f,
-        optimizer_g=optimizer_g)
+        optimizer_g=optimizer_g,
+        expert_loss_coef=1.0)
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    for i in tqdm(range(3_000)):
-        agent_data = target_random_buffer.sample(256)
-        expert_data = source_expert_buffer.sample(256)
-        random_data = source_random_buffer.sample(256)
+    pbar = tqdm(range(5), leave=True)
+    for i in pbar:
+        agent_data = target_random_buffer.sample(512)
+        expert_data = source_expert_buffer.sample(512)
+        random_data = source_random_buffer.sample(512)
         loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
 
         if i % 100 == 0:
             se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
             sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
             sink = sinkhorn_loss(sa, se)
-            print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
+            pbar.set_postfix({"sink_dist": sink,
+                          "w_dist_elem": w_dist_elem})
+            #print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
     
-    for i in tqdm(range(1, cfg.max_steps + 1)):
+    pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
+    for i in pbar:
         if i < cfg.algo.start_training:
             action = env.action_space.sample()
         else:
@@ -191,7 +193,8 @@ def collect_expert(cfg: DictConfig) -> None:
         else:
             mask = 0.0
             
-        reward = compute_reward_from_not(not_agent, expert_data, observation, next_observation)
+        reward = compute_reward_from_not(not_agent.encoders_state, not_agent.neural_dual_pairs.to_dual_potentials(),
+                                         expert_data, observation, next_observation)
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -202,20 +205,21 @@ def collect_expert(cfg: DictConfig) -> None:
             
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                agent_data = target_random_buffer.sample(256)
-                expert_data = source_expert_buffer.sample(256)
-                random_data = source_random_buffer.sample(256)
-                if i % 300 == 0 and i >= 300:
+                agent_data = target_random_buffer.sample(512)
+                expert_data = source_expert_buffer.sample(512)
+                random_data = source_random_buffer.sample(512)
+                if i % 500 == 0:
                     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
-                if i % 700 == 0 and i >= 700:
+                if i % 1000 == 0:
                     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
-                
-                if i % 2000 == 0 and i >= 2000:
-                    print(info)
+                if i % 2000 == 0:
+                    pbar.set_postfix(info)
                     se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
                     sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
                     sink = sinkhorn_loss(sa, se)
-                    print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
+                    print({"sink_dist": sink.item(),
+                            "w_dist_elem": w_dist_elem.item()})
+                    #print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
                 actor_update_info = agent.update(agent_data)
 
         if i % cfg.log_interval == 0:

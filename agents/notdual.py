@@ -108,11 +108,12 @@ class JointAgent:
         return learned_potentials.distance(x, y)
     
     @staticmethod
-    def ot_distance_pairs(learned_potentials, x, y, x_next, y_next):
+    def ot_distance_pairs(learned_potentials, x, y, x_next, y_next, sa_next, sa):
         x_pair = jnp.concatenate([x, x_next], axis=-1)
         y_pair = jnp.concatenate([y, y_next], axis=-1)
-
-        return learned_potentials.distance(x_pair, y_pair)
+        sa_next = jnp.concatenate([sa, sa_next], axis=-1)
+        
+        return learned_potentials.distance(jnp.concatenate([sa_next, x_pair]), jnp.concatenate([y_pair, y_pair]))
     
     @staticmethod
     def compute_expert_encoder_loss(learned_potentials, y, y_next): # maximize target potential g w.r.t encoder
@@ -128,9 +129,10 @@ class JointAgent:
             jnp.concatenate([sa, sa], axis=0), 
             jnp.concatenate([se, sn], axis=0), 
         )
-        loss_pairs = JointAgent.ot_distance_pairs(potentials_pairs, sn, se, sn_next, se_next)
+        #[sa, sn], [se, se], [sa_next, sn_next], [se_next, se_next]
+        loss_pairs = JointAgent.ot_distance_pairs(potentials_pairs, sn, se, sn_next, se_next, sa_next, sa)
         # expert_enc_loss = JointAgent.compute_expert_encoder_loss(potentials_pairs, y, y_next)
-        
+    
         loss = loss_elem - loss_pairs * expert_loss_coef
 
         return loss, loss_elem, loss_pairs
