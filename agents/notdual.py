@@ -68,7 +68,7 @@ class JointAgent:
         neural_g: nn.Module,
         optimizer_f,
         optimizer_g,
-        expert_loss_coef: float = 0.5,
+        expert_loss_coef: float = 1.0,
         learning_rate: float = 1e-4,
         rng = jax.random.PRNGKey(42)) -> None:
 
@@ -91,7 +91,7 @@ class JointAgent:
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            num_train_iters=5_000 # 20_000
+            num_train_iters=10_000 # 20_000
         )
 
         self.neural_dual_pairs = W2NeuralDualCustom(
@@ -100,7 +100,7 @@ class JointAgent:
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            num_train_iters=5_000 # 20_000
+            num_train_iters=10_000 # 20_000
         )
 
     @staticmethod
@@ -127,7 +127,7 @@ class JointAgent:
         loss_elem = JointAgent.ot_distance_elements(
             potentials_elem, 
             jnp.concatenate([sa, sa], axis=0), 
-            jnp.concatenate([se, sn], axis=0), 
+            jnp.concatenate([sn, sn], axis=0), 
         )
         #[sa, sn], [se, se], [sa_next, sn_next], [se_next, se_next]
         loss_pairs = JointAgent.ot_distance_pairs(potentials_pairs, sn, se, sn_next, se_next, sa_next, sa)

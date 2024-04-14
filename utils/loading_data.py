@@ -1,13 +1,12 @@
 import numpy as np
 from datasets.replay_buffer import ReplayBuffer, Dataset
-import gymnasium as gym
 
-def prepare_buffers_for_il(cfg):
+def prepare_buffers_for_il(cfg, target_obs_space, target_act_space):
     expert_source = np.load(cfg.imitation_env.path_to_expert, allow_pickle=True).item()
     expert_random = np.load(cfg.imitation_env.path_to_random_expert, allow_pickle=True).item()
-    source_random = np.load(cfg.imitation_env.path_to_random_target, allow_pickle=True).item()
+    target_random = np.load(cfg.imitation_env.path_to_random_target, allow_pickle=True).item()
     
-    source_dataset = Dataset(observations=expert_source['observations'],
+    expert_source_ds = Dataset(observations=expert_source['observations'],
                            actions=expert_source['actions'],
                            rewards=expert_source['rewards'],
                            dones_float=expert_source['dones'],
@@ -23,18 +22,18 @@ def prepare_buffers_for_il(cfg):
                            next_observations=expert_random['next_observations'],
                            size=expert_random['observations'].shape[0])
     
-    target_dataset_random = Dataset(observations=source_random['observations'],
-                           actions=source_random['actions'],
-                           rewards=source_random['rewards'],
-                           dones_float=source_random['dones'],
-                           masks=1.0 - source_random['dones'],
-                           next_observations=source_random['next_observations'],
-                           size=source_random['observations'].shape[0])
-    source_expert_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
-    source_expert_buffer.initialize_with_dataset(source_dataset)
-    source_random_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
-    source_random_buffer.initialize_with_dataset(non_expert_source_dataset)
-    target_random_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(target_dataset_random.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(target_dataset_random.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
+    target_dataset_random = Dataset(observations=target_random['observations'],
+                           actions=target_random['actions'],
+                           rewards=target_random['rewards'],
+                           dones_float=target_random['dones'],
+                           masks=1.0 - target_random['dones'],
+                           next_observations=target_random['next_observations'],
+                           size=target_random['observations'].shape[0])
+    # source_expert_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
+    # source_expert_buffer.initialize_with_dataset(source_dataset)
+    # source_random_buffer = ReplayBuffer(observation_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.observations.shape[-1], )), action_space=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(source_dataset.actions.shape[-1], )), capacity=cfg.algo.buffer_size)
+    # source_random_buffer.initialize_with_dataset(non_expert_source_dataset)
+    target_random_buffer = ReplayBuffer(observation_space=target_obs_space, action_space=target_act_space, capacity=cfg.algo.buffer_size)
     target_random_buffer.initialize_with_dataset(target_dataset_random)
     
-    return source_expert_buffer, source_random_buffer, target_random_buffer
+    return expert_source_ds, non_expert_source_dataset, target_random_buffer

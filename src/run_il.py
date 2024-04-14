@@ -22,6 +22,7 @@ import wandb
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
+import functools
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
 from agents.notdual import JointAgent
@@ -32,7 +33,7 @@ from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.record_video import RecordVideo
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnums=2)
 def sinkhorn_loss(
     x: jnp.ndarray, y: jnp.ndarray, epsilon: float = 0.001
 ) -> float:
@@ -45,17 +46,18 @@ def sinkhorn_loss(
     )
     return sdiv.divergence
 
-@jax.jit
-def compute_reward_from_not(encoders_state, potentials, expert_data, observation, next_observation):
-    se = encoders_state(expert_data.observations, method='encode_expert')
-    se_next = encoders_state(expert_data.next_observations, method='encode_expert')
+@functools.partial(jax.jit, static_argnums=0)
+def compute_reward_from_not(not_agent, expert_obs, expert_nobs, agent_observations, agent_next_observations):
+    se = not_agent.encoders_state(expert_obs, method='encode_expert')
+    se_next = not_agent.encoders_state(expert_nobs, method='encode_expert')
     expert_pairs = jnp.concatenate([se, se_next], axis=-1)
     
-    sa = encoders_state(observation, method='encode_agent')
-    sa_next = encoders_state(next_observation, method='encode_agent')
+    sa = not_agent.encoders_state(agent_observations, method='encode_agent')
+    sa_next = not_agent.encoders_state(agent_next_observations, method='encode_agent')
     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
     
-    reward = potentials.distance(agent_pairs, expert_pairs)
+    #reward = potentials.distance(agent_pairs, expert_pairs)
+    reward = jax.vmap(jax.vmap(not_agent.neural_dual_pairs.to_dual_potentials().distance, in_axes=(0, None)), in_axes=(None, 0))(agent_pairs, expert_pairs)
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -71,7 +73,7 @@ def collect_expert(cfg: DictConfig) -> None:
     
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
-        mode="offline",
+        #mode="offline",
         project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.imitation_env.name}_{cfg.algo.name}",
@@ -121,7 +123,8 @@ def collect_expert(cfg: DictConfig) -> None:
         eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
     
-    source_expert_buffer, source_random_buffer, target_random_buffer = prepare_buffers_for_il(cfg=cfg)
+    source_expert_ds, source_random_ds, target_random_buffer = prepare_buffers_for_il(cfg=cfg, target_obs_space=eval_env.observation_space,
+                                                                                          target_act_space=eval_env.action_space)
     
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
@@ -133,27 +136,27 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
-    hidden_dims = [8, 16, 32, 16, 8]
-    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims)
-    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims)
+    hidden_dims = [32, 32, 16, 8, 2]
+    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
+    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
 
     neural_f = models.MLP(
-        dim_hidden=[32, 32, 32, 32],
+        dim_hidden=[64, 64, 64, 64],
         is_potential=True,
     )
     neural_g = models.MLP(
-        dim_hidden=[32, 32, 32, 32],
+        dim_hidden=[64, 64, 64, 64],
         is_potential=True,
     )
     
-    optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+    optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
     optimizer_g = optimizer_f
 
     not_agent = JointAgent(
         encoder_agent, 
         encoder_expert, 
         agent_dim=eval_env.observation_space.shape[0],
-        expert_dim=source_expert_buffer.observations.shape[-1],
+        expert_dim=source_expert_ds.observations.shape[-1],
         embed_dim=hidden_dims[-1],
         neural_f=neural_f,
         neural_g=neural_g,
@@ -164,22 +167,24 @@ def collect_expert(cfg: DictConfig) -> None:
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    pbar = tqdm(range(5), leave=True)
+    pbar = tqdm(range(1500), leave=True) #1500
     for i in pbar:
         agent_data = target_random_buffer.sample(512)
-        expert_data = source_expert_buffer.sample(512)
-        random_data = source_random_buffer.sample(512)
+        expert_data = source_expert_ds.sample(512)
+        random_data = source_random_ds.sample(512)
         loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
 
         if i % 100 == 0:
             se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
             sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
             sink = sinkhorn_loss(sa, se)
-            pbar.set_postfix({"sink_dist": sink,
-                          "w_dist_elem": w_dist_elem})
+            info = {"sink_dist": sink,
+                          "w_dist_elem": w_dist_elem}
+            pbar.set_postfix(info)
+            wandb.log(info, step=i)
             #print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
     
-    pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
+    pbar = tqdm(range(1, cfg.max_steps + 1), leave=True) #cfg.max_steps
     for i in pbar:
         if i < cfg.algo.start_training:
             action = env.action_space.sample()
@@ -192,9 +197,7 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.0
-            
-        reward = compute_reward_from_not(not_agent.encoders_state, not_agent.neural_dual_pairs.to_dual_potentials(),
-                                         expert_data, observation, next_observation)
+
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -206,8 +209,8 @@ def collect_expert(cfg: DictConfig) -> None:
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
                 agent_data = target_random_buffer.sample(512)
-                expert_data = source_expert_buffer.sample(512)
-                random_data = source_random_buffer.sample(512)
+                expert_data = source_expert_ds.sample(512)
+                random_data = source_random_ds.sample(512)
                 if i % 500 == 0:
                     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
                 if i % 1000 == 0:
@@ -219,9 +222,15 @@ def collect_expert(cfg: DictConfig) -> None:
                     sink = sinkhorn_loss(sa, se)
                     print({"sink_dist": sink.item(),
                             "w_dist_elem": w_dist_elem.item()})
-                    #print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
                 actor_update_info = agent.update(agent_data)
-
+        ## Make rewarder
+        agent_last_obs = target_random_buffer.observations[:512]
+        agent_last_nobs = target_random_buffer.next_observations[:512]
+        expert_data = source_expert_ds.sample(512)
+        new_rewards = compute_reward_from_not(not_agent, expert_data.observations, expert_data.next_observations, agent_last_obs, agent_last_nobs)
+        target_random_buffer.rewards[:512] = new_rewards.argmax(-1)
+        
+        
         if i % cfg.log_interval == 0:
             wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],
                     f"Training/Actor loss": actor_update_info['actor_loss'],
