@@ -91,7 +91,7 @@ class JointAgent:
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            num_train_iters=10_000 # 20_000
+            num_train_iters=5_000 # 20_000
         )
 
         self.neural_dual_pairs = W2NeuralDualCustom(
@@ -100,7 +100,7 @@ class JointAgent:
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            num_train_iters=10_000 # 20_000
+            num_train_iters=5_000 # 20_000
         )
 
     @staticmethod

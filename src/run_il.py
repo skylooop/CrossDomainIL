@@ -46,18 +46,12 @@ def sinkhorn_loss(
     )
     return sdiv.divergence
 
-@functools.partial(jax.jit, static_argnums=0)
-def compute_reward_from_not(not_agent, expert_obs, expert_nobs, agent_observations, agent_next_observations):
-    se = not_agent.encoders_state(expert_obs, method='encode_expert')
-    se_next = not_agent.encoders_state(expert_nobs, method='encode_expert')
-    expert_pairs = jnp.concatenate([se, se_next], axis=-1)
-    
-    sa = not_agent.encoders_state(agent_observations, method='encode_agent')
-    sa_next = not_agent.encoders_state(agent_next_observations, method='encode_agent')
+def compute_reward_from_not(encoders, f_potential, agent_observations, agent_next_observations):
+    sa = encoders(agent_observations, method='encode_agent')
+    sa_next = encoders(agent_next_observations, method='encode_agent')
     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
     
-    #reward = potentials.distance(agent_pairs, expert_pairs)
-    reward = jax.vmap(jax.vmap(not_agent.neural_dual_pairs.to_dual_potentials().distance, in_axes=(0, None)), in_axes=(None, 0))(agent_pairs, expert_pairs)
+    reward = f_potential(agent_pairs) * 2 - jnp.dot(sa, sa_next) ** 2
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -136,7 +130,7 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
-    hidden_dims = [32, 32, 16, 8, 2]
+    hidden_dims = [64, 32, 16, 8, 2]
     encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
     encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
 
@@ -167,7 +161,7 @@ def collect_expert(cfg: DictConfig) -> None:
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    pbar = tqdm(range(1500), leave=True) #1500
+    pbar = tqdm(range(3_500), leave=True)
     for i in pbar:
         agent_data = target_random_buffer.sample(512)
         expert_data = source_expert_ds.sample(512)
@@ -197,7 +191,7 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.0
-
+        reward = compute_reward_from_not(not_agent.encoders_state, not_agent.neural_dual_pairs.state_f.potential_value_fn(not_agent.neural_dual_pairs.state_f.params), observation, next_observation)
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -223,14 +217,7 @@ def collect_expert(cfg: DictConfig) -> None:
                     print({"sink_dist": sink.item(),
                             "w_dist_elem": w_dist_elem.item()})
                 actor_update_info = agent.update(agent_data)
-        ## Make rewarder
-        agent_last_obs = target_random_buffer.observations[:512]
-        agent_last_nobs = target_random_buffer.next_observations[:512]
-        expert_data = source_expert_ds.sample(512)
-        new_rewards = compute_reward_from_not(not_agent, expert_data.observations, expert_data.next_observations, agent_last_obs, agent_last_nobs)
-        target_random_buffer.rewards[:512] = new_rewards.argmax(-1)
-        
-        
+
         if i % cfg.log_interval == 0:
             wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],
                     f"Training/Actor loss": actor_update_info['actor_loss'],
