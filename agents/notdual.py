@@ -70,6 +70,7 @@ class JointAgent:
         optimizer_g,
         expert_loss_coef: float = 1.0,
         learning_rate: float = 1e-4,
+        num_train_iters: int = 10_000,
         rng = jax.random.PRNGKey(42)) -> None:
 
         self.expert_loss_coef = expert_loss_coef
@@ -91,7 +92,7 @@ class JointAgent:
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            num_train_iters=5_000 # 20_000
+            num_train_iters=num_train_iters # 20_000
         )
 
         self.neural_dual_pairs = W2NeuralDualCustom(
@@ -100,7 +101,7 @@ class JointAgent:
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            num_train_iters=5_000 # 20_000
+            num_train_iters=num_train_iters # 20_000
         )
 
     @staticmethod

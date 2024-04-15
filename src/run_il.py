@@ -51,7 +51,7 @@ def compute_reward_from_not(encoders, f_potential, agent_observations, agent_nex
     sa_next = encoders(agent_next_observations, method='encode_agent')
     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
     
-    reward = f_potential(agent_pairs) * 2 - jnp.dot(sa, sa_next) ** 2
+    reward = f_potential(agent_pairs) * 2 #- jnp.linalg.norm(agent_pairs) ** 2
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -156,19 +156,21 @@ def collect_expert(cfg: DictConfig) -> None:
         neural_g=neural_g,
         optimizer_f=optimizer_f,
         optimizer_g=optimizer_g,
+        #learning_rate=1e-4,
+        num_train_iters=10_000,
         expert_loss_coef=1.0)
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    pbar = tqdm(range(3_500), leave=True)
+    pbar = tqdm(range(3_000), leave=True)
     for i in pbar:
         agent_data = target_random_buffer.sample(512)
         expert_data = source_expert_ds.sample(512)
         random_data = source_random_ds.sample(512)
         loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
 
-        if i % 100 == 0:
+        if i % 500 == 0:
             se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
             sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
             sink = sinkhorn_loss(sa, se)
@@ -202,14 +204,14 @@ def collect_expert(cfg: DictConfig) -> None:
             
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                agent_data = target_random_buffer.sample(512)
-                expert_data = source_expert_ds.sample(512)
-                random_data = source_random_ds.sample(512)
+                agent_data = target_random_buffer.sample(256)
+                expert_data = source_expert_ds.sample(256)
+                random_data = source_random_ds.sample(256)
                 if i % 500 == 0:
                     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
                 if i % 1000 == 0:
                     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
-                if i % 2000 == 0:
+                if i % 5000 == 0:
                     pbar.set_postfix(info)
                     se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
                     sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
