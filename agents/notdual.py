@@ -7,6 +7,15 @@ from typing import Dict
 import optax
 from networks.common import TrainState
 
+from ott.neural.solvers.conjugate import FenchelConjugateLBFGS
+
+DEFAULT_CONJUGATE_SOLVER = FenchelConjugateLBFGS(
+    gtol=1e-5,
+    max_iter=70,
+    max_linesearch_iter=30,
+    linesearch_type="backtracking",
+)
+
 class Encoders(nn.Module):
     encoders: Dict[str, nn.Module]
     
@@ -92,6 +101,8 @@ class JointAgent:
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
+            #conjugate_solver=DEFAULT_CONJUGATE_SOLVER,
+            #num_inner_iters=100,
             num_train_iters=num_train_iters # 20_000
         )
 
@@ -100,6 +111,8 @@ class JointAgent:
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
+            #conjugate_solver=DEFAULT_CONJUGATE_SOLVER, 
+            #num_inner_iters=100,
             optimizer_g=optimizer_g,
             num_train_iters=num_train_iters # 20_000
         )
@@ -128,7 +141,7 @@ class JointAgent:
         loss_elem = JointAgent.ot_distance_elements(
             potentials_elem, 
             jnp.concatenate([sa, sa], axis=0), 
-            jnp.concatenate([sn, sn], axis=0), 
+            jnp.concatenate([sn, se], axis=0), # sn, sn
         )
         #[sa, sn], [se, se], [sa_next, sn_next], [se_next, se_next]
         loss_pairs = JointAgent.ot_distance_pairs(potentials_pairs, sn, se, sn_next, se_next, sa_next, sa)
@@ -142,12 +155,18 @@ class JointAgent:
         
         @jax.jit
         def compute_embeds(encoders, batch_agent, batch_expert, random_data):
-            se = encoders(batch_expert.observations, method='encode_expert')
-            se_next = encoders(batch_expert.next_observations, method='encode_expert')
-            sn = encoders(random_data.observations, method='encode_expert')
-            sn_next = encoders(random_data.next_observations, method='encode_expert')
-            sa = encoders(batch_agent.observations, method='encode_agent')
-            sa_next = encoders(batch_agent.next_observations, method='encode_agent')
+            se = batch_expert.observations[:, :2]
+            se_next = batch_expert.next_observations[:, :2]
+            sn = random_data.observations[:, :2]
+            sn_next = random_data.next_observations[:, :2]
+            sa = batch_agent.observations[:, :2]
+            sa_next = batch_agent.next_observations[:, :2]
+            # se = encoders(batch_expert.observations, method='encode_expert')
+            # se_next = encoders(batch_expert.next_observations, method='encode_expert')
+            # sn = encoders(random_data.observations, method='encode_expert')
+            # sn_next = encoders(random_data.next_observations, method='encode_expert')
+            # sa = encoders(batch_agent.observations, method='encode_agent')
+            # sa_next = encoders(batch_agent.next_observations, method='encode_agent')
 
             sa_pairs = jnp.concatenate([sa, sa_next], axis=-1)
             se_pairs = jnp.concatenate([se, se_next], axis=-1)

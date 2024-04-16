@@ -143,22 +143,24 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
-    hidden_dims = [64, 32, 16, 8, 4, 2]
-    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
-    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
+    hidden_dims = [64, 32, 16, 8, 2]
+    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.relu)
+    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.relu)
 
     neural_f = models.MLP(
-        dim_hidden=[32, 32, 32, 32],
+        dim_hidden=[128, 128, 128, 128],
         is_potential=True,
-        act_fn=jax.nn.elu
+        act_fn=jax.nn.gelu
     )
     neural_g = models.MLP(
-        dim_hidden=[32, 32, 32, 32],
+        dim_hidden=[128, 128, 128, 128],
         is_potential=True,
-        act_fn=jax.nn.elu
+        act_fn=jax.nn.gelu
     )
-    
-    optimizer_f = optax.adam(learning_rate=1e-5, b1=0.9, b2=0.99)
+    # lr_schedule = optax.cosine_decay_schedule(
+    #         init_value=3e-4, decay_steps=10_000, alpha=1e-2
+    #     )
+    optimizer_f = optax.adamw(learning_rate=1e-4, b1=0.9, b2=0.99)
     optimizer_g = optimizer_f
 
     not_agent = JointAgent(
@@ -172,27 +174,30 @@ def collect_expert(cfg: DictConfig) -> None:
         optimizer_f=optimizer_f,
         optimizer_g=optimizer_g,
         #learning_rate=1e-4,
-        num_train_iters=5_000,
+        num_train_iters=10_000,
         expert_loss_coef=1.) # 1.0
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    pbar = tqdm(range(2_500), leave=True)
+    pbar = tqdm(range(3_000), leave=True)
     for i in pbar:
-        agent_data = target_random_buffer.sample(1024)
-        expert_data = source_expert_ds.sample(1024)
-        random_data = source_random_ds.sample(1024)
+        agent_data = target_random_buffer.sample(512)
+        expert_data = source_expert_ds.sample(512)
+        random_data = source_random_ds.sample(512)
         loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
 
         if i % 100 == 0:
-            se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-            sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
+            # se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+            # sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
+            se = expert_data.observations[:, :2]
+            sa = agent_data.observations[:, :2]
             sink = sinkhorn_loss(sa, se)
             info = {"sink_dist": sink,
-                          "w_dist_elem": w_dist_elem}
+                          "w_dist_elem": w_dist_elem,
+                          "w_dist_pairs": w_dist_pairs}
             pbar.set_postfix(info)
-            wandb.log(info, step=i)
+            wandb.log(info)
             #print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
     
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True) #cfg.max_steps
@@ -215,7 +220,7 @@ def collect_expert(cfg: DictConfig) -> None:
         
         if done:
             wandb.log({f"Training/rewards": info['episode']['r'],
-                    f"Training/episode length": info['episode']['l']}, step=i)
+                    f"Training/episode length": info['episode']['l']})
             (observation, info), done = env.reset(), False
 
         if i % 10_000 == 0:
@@ -226,13 +231,13 @@ def collect_expert(cfg: DictConfig) -> None:
         
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                agent_data = target_random_buffer.sample(256)
+                agent_data = target_random_buffer.sample(128)
                 expert_data = source_expert_ds.sample(256)
                 random_data = source_random_ds.sample(256)
-                if i % 1_000 == 0:
+                if i % 5_000 == 0:
                     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
-                if i % 10_000 == 0:
-                    info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
+                # if i % 8_000 == 0:
+                #     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
                 if i % 10_000 == 0:
                     pbar.set_postfix(info)
                     se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
@@ -251,12 +256,12 @@ def collect_expert(cfg: DictConfig) -> None:
                     f"Training/Actor loss": actor_update_info['actor_loss'],
                     f"Training/Entropy": actor_update_info['entropy'],
                     f"Training/Temperature": actor_update_info['temperature'],
-                    f"Training/Temp loss": actor_update_info['temp_loss']}, step=i)
+                    f"Training/Temp loss": actor_update_info['temp_loss']})
                 
         if i % cfg.eval_interval == 0:
             eval_stats = evaluate(agent, eval_env, cfg.eval_episodes)
             wandb.log({"Evaluation/rewards": eval_stats['r'],
-                    "Evaluation/length": eval_stats['l']}, step=i)
+                    "Evaluation/length": eval_stats['l']})
     
 def evaluate(agent, env, num_episodes: int):
     stats = {'r': [], 'l': [], 't': []}
