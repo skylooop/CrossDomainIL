@@ -47,7 +47,7 @@ def sinkhorn_loss(
     )
     return sdiv.divergence
 
-def plot_embeddings(encoders, sn, se, tn) -> None:
+def plot_embeddings(sn, se, tn) -> None:
     fig, ax = plt.subplots()
     
     ax.scatter(sn[:, 0], sn[:, 1], c='red', label='sn')
@@ -55,14 +55,16 @@ def plot_embeddings(encoders, sn, se, tn) -> None:
     ax.scatter(se[:, 0], se[:, 1], c='orange', label='se')
     plt.legend()
     plt.savefig('plots/embedding.png')
-
+    wandb.log({'Embeddings': wandb.Image(fig)})
+    plt.close()
+    
 @functools.partial(jax.jit, static_argnums=(1))
 def compute_reward_from_not(encoders, f_potential, f_params, agent_observations, agent_next_observations):
     sa = encoders(agent_observations, method='encode_agent')
     sa_next = encoders(agent_next_observations, method='encode_agent')
     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
     
-    reward = f_potential(f_params)(agent_pairs) * 2 - jnp.linalg.norm(agent_pairs) # ** 2
+    reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs) # ** 2
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -141,22 +143,22 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
-    hidden_dims = [64, 64, 32, 16, 8, 4, 2]
-    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.relu)
-    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.relu)
+    hidden_dims = [64, 32, 16, 8, 4, 2]
+    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
+    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
 
     neural_f = models.MLP(
-        dim_hidden=[64, 64, 64, 64],
+        dim_hidden=[32, 32, 32, 32],
         is_potential=True,
         act_fn=jax.nn.elu
     )
     neural_g = models.MLP(
-        dim_hidden=[64, 64, 64, 64],
+        dim_hidden=[32, 32, 32, 32],
         is_potential=True,
         act_fn=jax.nn.elu
     )
     
-    optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.999)
+    optimizer_f = optax.adam(learning_rate=1e-5, b1=0.9, b2=0.99)
     optimizer_g = optimizer_f
 
     not_agent = JointAgent(
@@ -170,13 +172,13 @@ def collect_expert(cfg: DictConfig) -> None:
         optimizer_f=optimizer_f,
         optimizer_g=optimizer_g,
         #learning_rate=1e-4,
-        num_train_iters=10_000,
-        expert_loss_coef=1.5) # 1.0
+        num_train_iters=5_000,
+        expert_loss_coef=1.) # 1.0
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    pbar = tqdm(range(1_000), leave=True)
+    pbar = tqdm(range(2_500), leave=True)
     for i in pbar:
         agent_data = target_random_buffer.sample(1024)
         expert_data = source_expert_ds.sample(1024)
@@ -224,9 +226,9 @@ def collect_expert(cfg: DictConfig) -> None:
         
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                agent_data = target_random_buffer.sample(128)
-                expert_data = source_expert_ds.sample(128)
-                random_data = source_random_ds.sample(128)
+                agent_data = target_random_buffer.sample(256)
+                expert_data = source_expert_ds.sample(256)
+                random_data = source_random_ds.sample(256)
                 if i % 1_000 == 0:
                     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
                 if i % 10_000 == 0:
