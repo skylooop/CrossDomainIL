@@ -64,7 +64,7 @@ def compute_reward_from_not(encoders, f_potential, f_params, agent_observations,
     sa_next = encoders(agent_next_observations, method='encode_agent')
     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
     
-    reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs) # ** 2
+    reward = f_potential(f_params)(agent_pairs) * 2 - jnp.linalg.norm(agent_pairs) ** 2
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -144,8 +144,8 @@ def collect_expert(cfg: DictConfig) -> None:
                                                      actions=env.action_space.sample()[None])
     
     hidden_dims = [64, 32, 16, 8, 2]
-    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.relu)
-    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.relu)
+    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
+    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
 
     neural_f = models.MLP(
         dim_hidden=[128, 128, 128, 128],
@@ -160,7 +160,7 @@ def collect_expert(cfg: DictConfig) -> None:
     # lr_schedule = optax.cosine_decay_schedule(
     #         init_value=3e-4, decay_steps=10_000, alpha=1e-2
     #     )
-    optimizer_f = optax.adamw(learning_rate=1e-4, b1=0.9, b2=0.99)
+    optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
     optimizer_g = optimizer_f
 
     not_agent = JointAgent(
@@ -174,13 +174,13 @@ def collect_expert(cfg: DictConfig) -> None:
         optimizer_f=optimizer_f,
         optimizer_g=optimizer_g,
         #learning_rate=1e-4,
-        num_train_iters=10_000,
+        num_train_iters=15_000,
         expert_loss_coef=1.) # 1.0
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    pbar = tqdm(range(3_000), leave=True)
+    pbar = tqdm(range(5_000), leave=True)
     for i in pbar:
         agent_data = target_random_buffer.sample(512)
         expert_data = source_expert_ds.sample(512)
@@ -188,8 +188,8 @@ def collect_expert(cfg: DictConfig) -> None:
         loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
 
         if i % 100 == 0:
-            # se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-            # sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
+            #se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+            #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
             se = expert_data.observations[:, :2]
             sa = agent_data.observations[:, :2]
             sink = sinkhorn_loss(sa, se)
@@ -198,7 +198,6 @@ def collect_expert(cfg: DictConfig) -> None:
                           "w_dist_pairs": w_dist_pairs}
             pbar.set_postfix(info)
             wandb.log(info)
-            #print(loss_elem, loss_pairs, w_dist_elem, w_dist_pairs, sink)
     
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True) #cfg.max_steps
     for i in pbar:
@@ -234,15 +233,18 @@ def collect_expert(cfg: DictConfig) -> None:
                 agent_data = target_random_buffer.sample(128)
                 expert_data = source_expert_ds.sample(256)
                 random_data = source_random_ds.sample(256)
-                if i % 5_000 == 0:
+                if i % 2_000 == 0:
                     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
-                # if i % 8_000 == 0:
+                # if i % 10_000 == 0:
                 #     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
                 if i % 10_000 == 0:
                     pbar.set_postfix(info)
-                    se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-                    sn = not_agent.encoders_state(random_data.observations, method='encode_expert')
-                    sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
+                    # se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+                    # sn = not_agent.encoders_state(random_data.observations, method='encode_expert')
+                    #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
+                    sa = agent_data.observations[:, :2]
+                    se = expert_data.observations[:, :2]
+                    sn = random_data.observations[:, :2]
                     
                     sink = sinkhorn_loss(sa, se)
                     print({"sink_dist": sink.item(),

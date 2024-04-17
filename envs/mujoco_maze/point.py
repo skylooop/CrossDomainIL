@@ -23,7 +23,7 @@ class PointEnv(AgentModel):
     FILE: str = "point.xml"
     ORI_IND: int = 2
     MANUAL_COLLISION: bool = True
-    RADIUS: float = 1
+    RADIUS: float = 0.5
     OBJBALL_TYPE: str = "hinge"
 
     VELOCITY_LIMITS: float = 10.0
@@ -65,10 +65,10 @@ class PointEnv(AgentModel):
         )
 
     def reset_model(self):
-        qpos = self.init_qpos + self.np_random.uniform(
-            size=self.model.nq, low=-0.1, high=0.1
-        )
-        qvel = self.init_qvel + self.np_random.normal(self.model.nv) * 0.1
+        qpos = self.init_qpos #+ self.np_random.uniform(
+        #    size=self.model.nq, low=-0.1, high=0.1
+        #)
+        qvel = self.init_qvel# + self.np_random.normal(self.model.nv) * 0.1
 
         # Set everything other than point to original position and 0 velocity.
         qpos[3:] = self.init_qpos[3:]

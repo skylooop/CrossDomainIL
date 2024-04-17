@@ -36,6 +36,7 @@ def collect_expert(cfg: DictConfig) -> None:
     
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
+        mode='offline',
         project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.env.name}_{cfg.algo.name}",
@@ -133,6 +134,7 @@ def collect_expert(cfg: DictConfig) -> None:
                     
             if i % cfg.eval_interval == 0:
                 eval_stats = evaluate(expert_agent, eval_env, cfg.eval_episodes)
+                print(eval_stats)
                 wandb.log({"Evaluation/rewards": eval_stats['r'],
                         "Evaluation/length": eval_stats['l']})
                 

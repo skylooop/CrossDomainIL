@@ -141,7 +141,7 @@ class JointAgent:
         loss_elem = JointAgent.ot_distance_elements(
             potentials_elem, 
             jnp.concatenate([sa, sa], axis=0), 
-            jnp.concatenate([sn, se], axis=0), # sn, sn
+            jnp.concatenate([se, se], axis=0), # sn, sn
         )
         #[sa, sn], [se, se], [sa_next, sn_next], [se_next, se_next]
         loss_pairs = JointAgent.ot_distance_pairs(potentials_pairs, sn, se, sn_next, se_next, sa_next, sa)
@@ -176,7 +176,7 @@ class JointAgent:
         
         sa, se, sn, sa_pairs, se_pairs, sn_pairs = compute_embeds(self.encoders_state, batch_agent, batch_expert, random_data)
 
-        _, loss_elem, w_dist_elem = self.neural_dual_elements.update(np.concatenate([sa, sa]), np.concatenate([se, sn]))
+        _, loss_elem, w_dist_elem = self.neural_dual_elements.update(np.concatenate([sa, sn]), np.concatenate([se, se]))
         _, loss_pairs, w_dist_pairs = self.neural_dual_pairs.update(np.concatenate([sa_pairs, sn_pairs]), np.concatenate([se_pairs, se_pairs]))
         
         return loss_elem, loss_pairs, w_dist_elem, w_dist_pairs
@@ -185,15 +185,20 @@ class JointAgent:
 
         @jax.jit
         def update_step(potentials_elem, potentials_pairs, encoders, batch_agent, batch_expert, random_data):
-
             def loss_fn(params):
-
-                se = encoders(batch_expert.observations, params=params, method='encode_expert')
-                se_next = encoders(batch_expert.next_observations, params=params, method='encode_expert')
-                sa = encoders(batch_agent.observations, params=params, method='encode_agent')
-                sa_next = encoders(batch_agent.next_observations, params=params, method='encode_agent')
-                sn = encoders(random_data.observations, method='encode_expert')
-                sn_next = encoders(random_data.next_observations, method='encode_expert')
+                se = batch_expert.observations[:, :2]
+                se_next = batch_expert.next_observations[:, :2]
+                sn = random_data.observations[:, :2]
+                sn_next = random_data.next_observations[:, :2]
+                sa = batch_agent.observations[:, :2]
+                sa_next = batch_agent.next_observations[:, :2]
+                
+                # se = encoders(batch_expert.observations, params=params, method='encode_expert')
+                # se_next = encoders(batch_expert.next_observations, params=params, method='encode_expert')
+                # sa = encoders(batch_agent.observations, params=params, method='encode_agent')
+                # sa_next = encoders(batch_agent.next_observations, params=params, method='encode_agent')
+                # sn = encoders(random_data.observations, method='encode_expert')
+                # sn_next = encoders(random_data.next_observations, method='encode_expert')
 
                 loss, not_loss, expert_enc_loss = JointAgent.encoders_loss(potentials_elem, potentials_pairs, sa, se, sn, sa_next, se_next, sn_next, self.expert_loss_coef)
 
