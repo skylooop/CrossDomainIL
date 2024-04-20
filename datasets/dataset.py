@@ -78,8 +78,9 @@ class Dataset:
                      next_observations=self.next_observations[indx])
 
     def get_iter(self, batch_size):
-        for i in range(self.size // batch_size):
-            yield self.sample(batch_size)
+        #for i in range(self.size // batch_size):
+        while True:
+            yield self.sample(batch_size).observations[:, :2] ####
             
     def get_initial_states(
         self,

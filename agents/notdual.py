@@ -64,8 +64,28 @@ class W2NeuralDualCustom(W2NeuralDual):
        
         return self, loss, w_dist
     
-class JointAgent:
+@jax.jit
+def compute_embeds(encoders, batch_agent, batch_expert, random_data):
+    se = batch_expert.observations[:, :2]
+    se_next = batch_expert.next_observations[:, :2]
+    sn = random_data.observations[:, :2]
+    sn_next = random_data.next_observations[:, :2]
+    sa = batch_agent.observations[:, :2]
+    sa_next = batch_agent.next_observations[:, :2]
+    # se = encoders(batch_expert.observations, method='encode_expert')
+    # se_next = encoders(batch_expert.next_observations, method='encode_expert')
+    # sn = encoders(random_data.observations, method='encode_expert')
+    # sn_next = encoders(random_data.next_observations, method='encode_expert')
+    # sa = encoders(batch_agent.observations, method='encode_agent')
+    # sa_next = encoders(batch_agent.next_observations, method='encode_agent')
 
+    sa_pairs = jnp.concatenate([sa, sa_next], axis=-1)
+    se_pairs = jnp.concatenate([se, se_next], axis=-1)
+    sn_pairs = jnp.concatenate([sn, sn_next], axis=-1)
+
+    return  sa, se, sn, sa_pairs, se_pairs, sn_pairs
+      
+class JointAgent:
     def __init__(
         self,
         encoder_agent: nn.Module,
@@ -135,54 +155,30 @@ class JointAgent:
         g_value = jax.vmap(learned_potentials.g)(y_pair)
         return jnp.mean((y_pair ** 2).sum(-1)) - 2 * jnp.mean(g_value)
     
-    @staticmethod
-    def encoders_loss(potentials_elem, potentials_pairs, sa, se, sn, sa_next, se_next, sn_next, expert_loss_coef):
+    #@staticmethod
+    # def encoders_loss(potentials_elem, potentials_pairs, sa, se, sn, sa_next, se_next, sn_next, expert_loss_coef):
         
-        loss_elem = JointAgent.ot_distance_elements(
-            potentials_elem, 
-            jnp.concatenate([sa, sa], axis=0), 
-            jnp.concatenate([se, se], axis=0), # sn, sn
-        )
-        #[sa, sn], [se, se], [sa_next, sn_next], [se_next, se_next]
-        loss_pairs = JointAgent.ot_distance_pairs(potentials_pairs, sn, se, sn_next, se_next, sa_next, sa)
-        # expert_enc_loss = JointAgent.compute_expert_encoder_loss(potentials_pairs, y, y_next)
+    #     loss_elem = JointAgent.ot_distance_elements(
+    #         potentials_elem, 
+    #         jnp.concatenate([sa, sn], axis=0), # sa
+    #         jnp.concatenate([se, se], axis=0),
+    #     )
+    #     #[sa, sn], [se, se], [sa_next, sn_next], [se_next, se_next]
+    #     loss_pairs = JointAgent.ot_distance_pairs(potentials_pairs, sn, se, sn_next, se_next, sa_next, sa)
+    #     # expert_enc_loss = JointAgent.compute_expert_encoder_loss(potentials_pairs, y, y_next)
     
-        loss = loss_elem - loss_pairs * expert_loss_coef
+    #     loss = loss_elem - loss_pairs * expert_loss_coef
 
-        return loss, loss_elem, loss_pairs
+    #     return loss, loss_elem, loss_pairs
         
     def optimize_not(self, batch_agent, batch_expert, random_data):
-        
-        @jax.jit
-        def compute_embeds(encoders, batch_agent, batch_expert, random_data):
-            se = batch_expert.observations[:, :2]
-            se_next = batch_expert.next_observations[:, :2]
-            sn = random_data.observations[:, :2]
-            sn_next = random_data.next_observations[:, :2]
-            sa = batch_agent.observations[:, :2]
-            sa_next = batch_agent.next_observations[:, :2]
-            # se = encoders(batch_expert.observations, method='encode_expert')
-            # se_next = encoders(batch_expert.next_observations, method='encode_expert')
-            # sn = encoders(random_data.observations, method='encode_expert')
-            # sn_next = encoders(random_data.next_observations, method='encode_expert')
-            # sa = encoders(batch_agent.observations, method='encode_agent')
-            # sa_next = encoders(batch_agent.next_observations, method='encode_agent')
-
-            sa_pairs = jnp.concatenate([sa, sa_next], axis=-1)
-            se_pairs = jnp.concatenate([se, se_next], axis=-1)
-            sn_pairs = jnp.concatenate([sn, sn_next], axis=-1)
-
-            return  sa, se, sn, sa_pairs, se_pairs, sn_pairs
-        
         sa, se, sn, sa_pairs, se_pairs, sn_pairs = compute_embeds(self.encoders_state, batch_agent, batch_expert, random_data)
-
         _, loss_elem, w_dist_elem = self.neural_dual_elements.update(np.concatenate([sa, sn]), np.concatenate([se, se]))
         _, loss_pairs, w_dist_pairs = self.neural_dual_pairs.update(np.concatenate([sa_pairs, sn_pairs]), np.concatenate([se_pairs, se_pairs]))
         
         return loss_elem, loss_pairs, w_dist_elem, w_dist_pairs
     
     def optimize_encoders(self, batch_agent, batch_expert, random_data):
-
         @jax.jit
         def update_step(potentials_elem, potentials_pairs, encoders, batch_agent, batch_expert, random_data):
             def loss_fn(params):
