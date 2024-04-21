@@ -120,9 +120,9 @@ def create_learner(
                  seed: int,
                  observations: jnp.ndarray,
                  value_def: nn.Module,
-                 optim_kwargs: dict = {
-                    'learning_rate': 0.00005,
-                    'eps': 0.0003125
+                 optim_kwargs: dict = { # for non-vision
+                    'learning_rate': 3e-4,
+                    'eps': 1e-8
                  },
                  discount: float = 0.99,
                  target_update_rate: float = 0.005,

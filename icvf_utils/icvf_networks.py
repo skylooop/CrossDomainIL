@@ -59,8 +59,6 @@ def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):
 
     return ICVFWithEncoder(encoder, vf)
 
-
-
 ##
 #
 # Actual ICVF definitions below
@@ -121,11 +119,12 @@ class MultilinearVF(nn.Module):
         self.matrix_a = nn.Dense(self.hidden_dims[-1], name='matrix_a')
         self.matrix_b = nn.Dense(self.hidden_dims[-1], name='matrix_b')
         
-    
     def __call__(self, observations: jnp.ndarray, outcomes: jnp.ndarray, intents: jnp.ndarray) -> jnp.ndarray:
         return self.get_info(observations, outcomes, intents)['v']
         
-
+    def get_psi(self, observations):
+        return self.psi_nety(observations)
+    
     def get_phi(self, observations):
         return self.phi_net(observations)
 

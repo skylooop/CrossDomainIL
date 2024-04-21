@@ -28,6 +28,9 @@ from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
 from agents.notdual import JointAgent
 from networks.common import LayerNormMLP
+from icvf_utils.icvf_networks import create_icvf
+from icvf_utils.icvf_learner import create_learner
+from jaxrl_m.common import TrainState
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from gymnasium.wrappers.time_limit import TimeLimit
@@ -58,25 +61,14 @@ def plot_embeddings(sn, se, tn) -> None:
     wandb.log({'Embeddings': wandb.Image(fig)})
     plt.close()
 
-# @functools.partial(jax.jit, static_argnums=(1))
-# def compute_reward_from_not_transport(encoders, f_potential, f_params, agent_observations, agent_next_observations):
-#     sa = agent_observations[:2]
-#     sa_next = agent_next_observations[:2]
-#     # sa = encoders(agent_observations, method='encode_agent')
-#     # sa_next = encoders(agent_next_observations, method='encode_agent')
-#     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
-#     T = potentials.transport(agent_pairs)
-#     reward = - ((T - agent_pairs) ** 2).sum(-1)
-#     return reward
-
 @functools.partial(jax.jit, static_argnums=(1))
 def compute_reward_from_not(encoders, f_potential, f_params, agent_observations, agent_next_observations):
     # sa = agent_observations[:2]
     # sa_next = agent_next_observations[:2]
-    sa = encoders(agent_observations, method='encode_agent')
-    sa_next = encoders(agent_next_observations, method='encode_agent')
+    # sa = encoders(agent_observations, method='encode_agent')
+    # sa_next = encoders(agent_next_observations, method='encode_agent')
     agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
-    reward = f_potential(f_params)(agent_pairs)# *2 - jnp.linalg.norm(agent_pairs)# ** 2
+    reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs)# ** 2
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -155,17 +147,32 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
+    if cfg.use_pretrained_icvf:
+        print("Loading ICVF")
+        from orbax.checkpoint import PyTreeCheckpointer
+        
+        checkpointer = PyTreeCheckpointer()
+        restored_ckpt = checkpointer.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-04-21/15-07-38/saved_model")
+        value_def = create_icvf("multilinear", hidden_dims=[512, 512, 512], ensemble=True)
+        icvf_value = TrainState.create(value_def, params=restored_ckpt['value']['params'])
+    
+    if cfg.ecnoders_icvf:
+        value_def = create_icvf("multilinear", hidden_dims=[256, 256], ensemble=True)
+        agent = create_learner(cfg.seed,
+                    eval_env.observation_space.sample(),
+                    value_def)
+        
     hidden_dims = [64, 32, 16, 8, 2]
     encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
     encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
 
     neural_f = models.MLP(
-        dim_hidden=[64, 64, 64, 64],
+        dim_hidden=[128, 128, 128, 128],
         is_potential=True,
         act_fn=jax.nn.leaky_relu
     )
     neural_g = models.MLP(
-        dim_hidden=[64, 64, 64, 64],
+        dim_hidden=[128, 128, 128, 128],
         is_potential=True,
         act_fn=jax.nn.leaky_relu
     )
@@ -192,7 +199,7 @@ def collect_expert(cfg: DictConfig) -> None:
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     # PRETRAIN NOT
-    pbar = tqdm(range(10_000), leave=True)
+    pbar = tqdm(range(1), leave=True)
     for i in pbar:
         agent_data = target_random_buffer.sample(1024)
         expert_data = source_expert_ds.sample(1024)
@@ -224,7 +231,7 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.
-        reward = compute_reward_from_not(not_agent.encoders_state, not_agent.neural_dual_pairs.state_f.potential_value_fn,
+        reward = compute_reward_from_not(not_agent.encoders_state, icvf_value, not_agent.neural_dual_pairs.state_f.potential_value_fn,
                                          not_agent.neural_dual_pairs.state_f.params, observation, next_observation)
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
