@@ -108,10 +108,8 @@ class ICVFAgent(flax.struct.PyTreeNode):
 
             return icvf_loss(value_fn, target_value_fn, batch, agent.config)
         
-        if agent.config['periodic_target_update']:
-            new_target_value = periodic_target_update(agent.value, agent.target_value, int(1.0 / agent.config['target_update_rate']))
-        else:
-            new_target_value = target_update(agent.value, agent.target_value, agent.config['target_update_rate'])
+        new_target_params = optax.incremental_update(agent.value.params, agent.target_value.params, agent.config['target_update_rate'])
+        new_target_value = agent.target_value.replace(params=new_target_params)
         new_value, value_info = agent.value.apply_loss_fn(loss_fn=value_loss_fn, has_aux=True)
 
         return agent.replace(value=new_value, target_value=new_target_value), value_info

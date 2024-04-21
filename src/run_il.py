@@ -147,25 +147,24 @@ def collect_expert(cfg: DictConfig) -> None:
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
     
-    if cfg.use_pretrained_icvf:
-        print("Loading ICVF")
-        from orbax.checkpoint import PyTreeCheckpointer
+    # if cfg.use_pretrained_icvf:
+    #     print("Loading ICVF")
+    #     from orbax.checkpoint import PyTreeCheckpointer
         
-        checkpointer = PyTreeCheckpointer()
-        restored_ckpt = checkpointer.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-04-21/15-07-38/saved_model")
-        value_def = create_icvf("multilinear", hidden_dims=[512, 512, 512], ensemble=True)
-        icvf_value = TrainState.create(value_def, params=restored_ckpt['value']['params'])
+    #     checkpointer = PyTreeCheckpointer()
+    #     restored_ckpt = checkpointer.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-04-21/15-07-38/saved_model")
+    #     value_def = create_icvf("multilinear", hidden_dims=[512, 512, 512], ensemble=True)
+    #     icvf_value = TrainState.create(value_def, params=restored_ckpt['value']['params'])
     
-    if cfg.ecnoders_icvf:
-        value_def = create_icvf("multilinear", hidden_dims=[256, 256], ensemble=True)
-        agent = create_learner(cfg.seed,
-                    eval_env.observation_space.sample(),
-                    value_def)
+    # Whether to train encoder based on ICVF -> Then use as frozen or extract
+    # trained enc params and init new for further training
+    if cfg.encoders_icvf:
+        icvf = StateEncoderICVF.create(
+            cfg.seed,
+            eval_env.observation_space.sample(),
+            eval_env.action_space.sample(),
+        )
         
-    hidden_dims = [64, 32, 16, 8, 2]
-    encoder_expert = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
-    encoder_agent = LayerNormMLP(hidden_dims=hidden_dims, activations=jax.nn.leaky_relu)
-
     neural_f = models.MLP(
         dim_hidden=[128, 128, 128, 128],
         is_potential=True,
@@ -176,9 +175,7 @@ def collect_expert(cfg: DictConfig) -> None:
         is_potential=True,
         act_fn=jax.nn.leaky_relu
     )
-    # lr_schedule = optax.cosine_decay_schedule(
-    #         init_value=3e-4, decay_steps=10_000, alpha=1e-2
-    #     )
+    
     optimizer_f = optax.adam(learning_rate=1e-4, b1=0.5, b2=0.99)
     optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
 
@@ -198,8 +195,11 @@ def collect_expert(cfg: DictConfig) -> None:
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
-    # PRETRAIN NOT
-    pbar = tqdm(range(1), leave=True)
+    # Stage 1. Pretrain ICVF+Encoders
+    ###
+    
+    # Stage 2. PRETRAIN Neural OT
+    pbar = tqdm(range(5_000), leave=True)
     for i in pbar:
         agent_data = target_random_buffer.sample(1024)
         expert_data = source_expert_ds.sample(1024)
@@ -209,8 +209,6 @@ def collect_expert(cfg: DictConfig) -> None:
         if i % 100 == 0:
             #se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
             #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
-            se = expert_data.observations[:, :2]
-            sa = agent_data.observations[:, :2]
             sink = sinkhorn_loss(sa, se)
             info = {"sink_dist": sink,
                           "w_dist_elem": w_dist_elem,
