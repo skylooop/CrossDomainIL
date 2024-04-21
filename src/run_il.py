@@ -92,7 +92,7 @@ def collect_expert(cfg: DictConfig) -> None:
     
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
-        #mode="offline",
+        mode="offline",
         project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.imitation_env.name}_{cfg.algo.name}",
@@ -242,13 +242,13 @@ def collect_expert(cfg: DictConfig) -> None:
         
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                agent_data = target_random_buffer.sample(256)
+                agent_data = target_random_buffer.sample(256) # Maybe add prioritization?
                 expert_data = source_expert_ds.sample(1024)
-                random_data = source_random_ds.sample(1024)
-                if i % 500 == 0:
-                    loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
-                # if i % 10_000 == 0:
-                #     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
+                random_data = source_random_ds.sample(256)
+                loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+                #if i % 500 == 0:
+                    # if i % 10_000 == 0:
+                    #     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
                 if i % 10_000 == 0:
                     pbar.set_postfix(info)
                     # se = not_agent.encoders_state(expert_data.observations, method='encode_expert')

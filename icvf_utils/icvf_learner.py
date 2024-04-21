@@ -13,8 +13,6 @@ def expectile_loss(adv, diff, expectile=0.8):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-
-
 def icvf_loss(value_fn, target_value_fn, batch, config):
 
     assert all([k in config for k in ['no_intent', 'min_q', 'expectile', 'discount']]), 'Missing ICVF config keys'

@@ -1,24 +1,24 @@
-import os
-from functools import partial
 import numpy as np
 import jax
+import os
 import jax.numpy as jnp
-import flax
 import hydra
 from omegaconf import DictConfig
 from tqdm.auto import tqdm
+
+import matplotlib.pyplot as plt
+import wandb
+import rootutils
+import random
+from orbax.checkpoint import PyTreeCheckpointer
+from flax.training import orbax_utils
+
+ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
 from icvf_utils.gcdataset import GCSDataset
 from jaxrl_m.dataset import Dataset
 from icvf_utils.icvf_learner import create_learner
 from icvf_utils.icvf_networks import create_icvf
-
-import wandb
-import rootutils
-import random
-
-ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
-import pickle
 
 @hydra.main(version_base='1.4', config_path=str(ROOT/"configs"), config_name="icvf")
 def main(cfg: DictConfig) -> None:
@@ -27,38 +27,47 @@ def main(cfg: DictConfig) -> None:
     #################
     wandb.init(
         mode="offline",
-        project=cfg.logger.project,
         config=dict(cfg),
-        group="expert_" + f"{cfg.imitation_env.name}_{cfg.algo.name}",
     )
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
     
-    pre_collected_data = np.load("../outputs/2024-04-17/13-56-58/saved_prior/random_policy.npy", allow_pickle=True).item()
-    pre_collected_ds = Dataset.create(observations=pre_collected_data['observations'],
-                           actions=pre_collected_data['actions'],
-                           rewards=pre_collected_data['rewards'],
-                           dones_float=pre_collected_data['dones'],
-                           masks=1.0 - pre_collected_data['dones'],
-                           next_observations=pre_collected_data['next_observations'])
+    target_random = np.load(hydra.utils.get_original_cwd() + "/prep_data/pointumaze/rand_target/random_policy.npy", allow_pickle=True).item()
+    expert_source = np.load(hydra.utils.get_original_cwd() +"/prep_data/pointumaze/expert_source/trained_expert.npy", allow_pickle=True).item()
     
-    gc_dataset = GCSDataset(pre_collected_ds, **GCSDataset.get_default_config().to_dict())
+    target_random_ds = Dataset.create(observations=target_random['observations'],
+                           actions=target_random['actions'],
+                           rewards=target_random['rewards'],
+                           dones_float=target_random['dones'],
+                           masks=1.0 - target_random['dones'],
+                           next_observations=target_random['next_observations'])
+    expert_source_ds = Dataset.create(observations=expert_source['observations'],
+                           actions=expert_source['actions'],
+                           rewards=expert_source['rewards'],
+                           dones_float=expert_source['dones'],
+                           masks=1.0 - expert_source['dones'],
+                           next_observations=expert_source['next_observations'])
+    
+    # Learn ICVF on agent data
+    gc_dataset = GCSDataset(target_random_ds, **GCSDataset.get_default_config().to_dict())
     example_batch = gc_dataset.sample(1)
 
     hidden_dims = tuple([int(h) for h in cfg.algo.hidden_dims])
-    value_def = create_icvf(hidden_dims=hidden_dims)
+    value_def = create_icvf("multilinear", hidden_dims=hidden_dims)
 
     agent = create_learner(cfg.seed,
                     example_batch['observations'],
                     value_def,
                     **dict(cfg.algo))
-
-    visualizer = DebugPlotGenerator(gc_dataset)
+    target_random_sample = target_random_ds.sample(20)
+    source_expert_sample = expert_source_ds.sample(20)
+    
+    visualizer = DebugPlotGenerator(target_random_sample, gc_dataset=gc_dataset)
 
     for i in tqdm(range(1, cfg.max_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
-        batch = gc_dataset.sample(cfg.algo.batch_size)  
+        batch = gc_dataset.sample(cfg.algo.batch_size)
         agent, update_info = agent.update(batch)
 
         if i % cfg.log_interval == 0:
@@ -73,15 +82,13 @@ def main(cfg: DictConfig) -> None:
             wandb.log(eval_metrics, step=i)
 
         if i % cfg.save_interval == 0:
-            save_dict = dict(
-                agent=flax.serialization.to_state_dict(agent),
-                config=FLAGS.config.to_dict()
+            ckptr = PyTreeCheckpointer()
+            ckptr.save(
+                os.getcwd() + "/saved_model",
+                agent,
+                force=True,
+                save_args=orbax_utils.save_args_from_target(agent),
             )
-
-            fname = os.path.join(FLAGS.save_dir, 'step_{}_params.pkl'.format(i))
-            print(f'Saving to {fname}')
-            with open(fname, "wb") as f:
-                pickle.dump(save_dict, f)
 
 ###################################################################################################
 #
@@ -89,76 +96,33 @@ def main(cfg: DictConfig) -> None:
 #
 ###################################################################################################
 class DebugPlotGenerator:
-    def __init__(self, env_name, gc_dataset):
-        if 'pointumaze' in env_name:
-            init_state = np.copy(viz_dataset['observations'][0])
-            init_state[:2] = (0, 0)
-        # elif 'maze' in env_name:
-        #     viz_env, viz_dataset = d4rl_pm.get_gcenv_and_dataset(env_name)
-        #     init_state = np.copy(viz_dataset['observations'][0])
-        #     init_state[:2] = (3, 4)
-        #     viz_library = d4rl_pm
-        #     self.viz_things = (viz_env, viz_dataset, viz_library, init_state)
-        else:
-            raise NotImplementedError('Visualization not implemented for this environment')
-
-        intent_set_indx = np.array([184588, 62200, 162996, 110214, 4086, 191369, 92549, 12946, 192021])
-        self.intent_set_batch = gc_dataset.sample(9, indx=intent_set_indx)
-        self.example_trajectory = gc_dataset.sample(50, indx=np.arange(1000, 1050))
-
+    def __init__(self, target_agent_samples, gc_dataset):
+        init_state = np.copy(gc_dataset.dataset['observations'][0])
+        init_state[:2] = (0, 0)
+        self.example_trajectory = jnp.sort(target_agent_samples['observations'], axis=0)
+        
+        fig, ax = plt.subplots()
+        ax.scatter(target_agent_samples['observations'][:, 0], target_agent_samples['observations'][:, 1])
+        plt.tight_layout()
+        plt.savefig("example_trajectory.png")
+        plt.close()
+        
     def generate_debug_plots(self, agent):
         example_trajectory = self.example_trajectory
-        intents = self.intent_set_batch['observations']
-        (viz_env, viz_dataset, viz_library, init_state) = self.viz_things
-
-        visualizations = {}
         traj_metrics = get_traj_v(agent, example_trajectory)
-        value_viz = viz_utils.make_visual_no_image(traj_metrics, 
-            [
-            partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()
-                ]
-        )
-        visualizations['value_traj_viz'] = wandb.Image(value_viz)
-
-        if 'maze' in FLAGS.env_name:
-            print('Visualizing intent policies and values')
-            # Policy visualization
-            methods = [
-                partial(viz_library.plot_policy, policy_fn=partial(get_policy, agent, intent=intents[idx]))
-                for idx in range(9)
-            ]
-            image = viz_library.make_visual(viz_env, viz_dataset, methods)
-            visualizations['intent_policies'] = wandb.Image(image)
-
-            # Value visualization
-            methods = [
-                partial(viz_library.plot_value, value_fn=partial(get_values, agent, intent=intents[idx]))
-                for idx in range(9)
-            ]
-            image = viz_library.make_visual(viz_env, viz_dataset, methods)
-            visualizations['intent_values'] = wandb.Image(image)
-
-            for idx in range(3):
-                methods = [
-                    partial(viz_library.plot_policy, policy_fn=partial(get_policy, agent, intent=intents[idx])),
-                    partial(viz_library.plot_value, value_fn=partial(get_values, agent, intent=intents[idx]))
-                ]
-                image = viz_library.make_visual(viz_env, viz_dataset, methods)
-                visualizations[f'intent{idx}'] = wandb.Image(image)
-
-            image_zz = viz_library.gcvalue_image(
-                viz_env,
-                viz_dataset,
-                partial(get_v_zz, agent),
-            )
-            image_gz = viz_library.gcvalue_image(
-                viz_env,
-                viz_dataset,
-                partial(get_v_gz, agent, init_state),
-            )
-            visualizations['v_zz'] = wandb.Image(image_zz)
-            visualizations['v_gz'] = wandb.Image(image_gz)
-        return visualizations
+        fig, ax = plt.subplots(nrows=3, ncols=1)
+        ax[0].plot(traj_metrics['dist_to_beginning'])
+        ax[0].title.set_text('dist_to_beginning')
+        
+        ax[1].plot(traj_metrics['dist_to_middle'])
+        ax[1].title.set_text('dist_to_middle')
+        
+        ax[2].plot(traj_metrics['dist_to_end'])
+        ax[2].title.set_text('dist_to_end')
+        plt.tight_layout()
+        plt.savefig("icvf_eval.png")
+        plt.close()
+        return traj_metrics
 
 ###################################################################################################
 #
@@ -200,7 +164,7 @@ def get_debug_statistics(agent, batch):
 
     s = batch['observations']
     g = batch['goals']
-    z = batch['desired_goals']
+    z = batch['desired_goals'] # = intent
 
     info_ssz = get_info(s, s, z)
     info_szz = get_info(s, z, z)
@@ -242,10 +206,9 @@ def get_v_gz(agent, initial_state, target_goal, observations):
     return get_gcvalue(agent, initial_state, observations, target_goal)
 
 @jax.jit
-def get_traj_v(agent, trajectory):
+def get_traj_v(agent, observations):
     def get_v(s, g):
         return agent.value(s[None], g[None], g[None]).mean()
-    observations = trajectory['observations']
     all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations)
     return {
         'dist_to_beginning': all_values[:, 0],

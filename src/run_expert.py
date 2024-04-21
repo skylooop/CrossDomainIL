@@ -98,6 +98,7 @@ def collect_expert(cfg: DictConfig) -> None:
     replay_buffer = ReplayBuffer(env.observation_space, env.action_space, cfg.algo.buffer_size)
     
     (observation, info), done = env.reset(seed=cfg.seed), False
+    
     if cfg.train_expert:
         for i in tqdm(range(1, cfg.max_steps + 1)):
             if i < cfg.algo.start_training:
@@ -141,7 +142,7 @@ def collect_expert(cfg: DictConfig) -> None:
         save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=False)
         
     print(f"Saving random policy")
-    save_random_policy(eval_env, 10, visual=False)
+    save_random_policy(eval_env, 15, visual=False)
     
 def save_random_policy(env, n_episodes, visual):
     obs, nobs, rews, acts, dones, viz_obs = [], [], [], [], [], []
