@@ -184,14 +184,12 @@ def collect_expert(cfg: DictConfig) -> None:
         encoder_expert, 
         agent_dim=eval_env.observation_space.shape[0],
         expert_dim=source_expert_ds.observations.shape[-1],
-        embed_dim=hidden_dims[-1],
         neural_f=neural_f,
         neural_g=neural_g,
         optimizer_f=optimizer_f,
         optimizer_g=optimizer_g,
-        #learning_rate=1e-4,
         num_train_iters=10_000,
-        expert_loss_coef=1.) # 1.0
+        expert_loss_coef=1.)
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
@@ -229,7 +227,7 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.
-        reward = compute_reward_from_not(not_agent.encoders_state, icvf_value, not_agent.neural_dual_pairs.state_f.potential_value_fn,
+        reward = compute_reward_from_not(not_agent.encoders_state, not_agent.neural_dual_pairs.state_f.potential_value_fn,
                                          not_agent.neural_dual_pairs.state_f.params, observation, next_observation)
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation

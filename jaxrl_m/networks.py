@@ -13,6 +13,7 @@ This file contains nn.Module definitions for common networks used in RL. It is d
 """
 
 from jaxrl_m.typing import *
+from typing import Type
 
 import flax.linen as nn
 import jax.numpy as jnp
@@ -32,6 +33,15 @@ def default_init(scale: Optional[float] = 1.0):
     return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
 
 
+class CrossDomainAlign(nn.Module):
+    encoder: Type[nn.Module]
+    vf_def: Type[nn.Module] = None
+    
+    @nn.compact
+    def __call__(self, obs: jnp.ndarray, next_obs: jnp.ndarray) -> Dict[str, np.ndarray]:
+        return {'encoded_obs': self.encoder_source(obs),
+                'encoded_next': self.encoder_source(next_obs)}
+        
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu

@@ -104,7 +104,7 @@ class GCSDataset(GCDataset):
             goal_key = 'goals'
         else:
             act_key = 'goals'
-            goal_key = 'desired_goals' # s+
+            goal_key = 'desired_goals'
         
         if indx is None:
             indx = np.random.randint(self.dataset.size-1, size=batch_size)

@@ -3,12 +3,15 @@ from typing import Tuple, Union
 
 import numpy as np
 from tqdm.auto import tqdm
+import jax
 
 Batch = collections.namedtuple(
     'Batch',
     ['observations', 'actions', 'rewards', 'masks', 'next_observations'])
 
-
+ICVF_output = collections.namedtuple(
+    'ICVF_output',
+    ['observations', 'actions', 'rewards', 'masks', 'next_observations', 'goals'])
 def split_into_trajectories(observations, actions, rewards, masks, dones_float,
                             next_observations):
     trajs = [[]]
@@ -69,8 +72,38 @@ class Dataset:
         self.next_observations = next_observations
         self.size = size
 
-    def sample(self, batch_size: int) -> Batch:
+    def sample_goals(self, indx):
+        batch_size = len(indx)
+        # Random goals
+        goal_indx = np.random.randint(self.dataset.size-self.curr_goal_shift, size=batch_size)
+        
+        # Goals from the same trajectory
+        final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]
+        if self.max_distance is not None:
+            final_state_indx = np.clip(final_state_indx, 0, indx + self.max_distance)
+            
+        distance = np.random.rand(batch_size)
+        middle_goal_indx = np.round(((indx) * distance + final_state_indx * (1- distance))).astype(int)
+        
+        #hardcoded
+        goal_indx = np.where(np.random.rand(batch_size) < 0.5 / (1.0 - 0.2), middle_goal_indx, goal_indx)
+        # Goals at the current state
+        goal_indx = np.where(np.random.rand(batch_size) < 0.2, indx, goal_indx)
+        return goal_indx
+    
+    def sample(self, batch_size: int, icvf: bool = False) -> Batch:
         indx = np.random.randint(self.size, size=batch_size)
+        if icvf:
+            goal_indx = self.sample_goals(indx)            
+            success = (indx == goal_indx)
+            rewards = success.astype(float) - 1
+            return ICVF_output(observations=self.observations[indx],
+                     actions=self.actions[indx],
+                     rewards=rewards,
+                     masks=1.0 - success.astype(float),
+                     goals=jax.tree_util.tree_map(lambda arr: arr[goal_indx], self.observations),
+                     next_observations=self.next_observations[indx])
+            
         return Batch(observations=self.observations[indx],
                      actions=self.actions[indx],
                      rewards=self.rewards[indx],

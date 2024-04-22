@@ -1,8 +1,16 @@
 from jaxrl_m.typing import *
-from jaxrl_m.networks import MLP, get_latent, default_init, ensemblize
+from jaxrl_m.networks import MLP, get_latent, default_init, ensemblize, CrossDomainAlign
 
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
+
+from flax.struct import PyTreeNode
+from jaxtyping import PRNGKeyArray
+from jaxrl_m.common import TrainState
+
+import gymnasium
+import optax
 
 class LayerNormMLP(nn.Module):
     hidden_dims: Sequence[int]
@@ -18,7 +26,6 @@ class LayerNormMLP(nn.Module):
                 x = self.activations(x)
                 x = nn.LayerNorm()(x)
         return x
-
 
 class ICVFWithEncoder(nn.Module):
     encoder: nn.Module
@@ -42,6 +49,15 @@ class ICVFWithEncoder(nn.Module):
         latent_g = get_latent(self.encoder, outcomes)
         latent_z = get_latent(self.encoder, intents)
         return self.vf.get_info(latent_s, latent_g, latent_z)
+
+class SimpleVF(nn.Module):
+    hidden_dims: Sequence[int]
+    
+    @nn.compact
+    def __call__(self, observations: jnp.ndarray, train=None) -> jnp.ndarray:
+        V_net = LayerNormMLP((*self.hidden_dims, 1), activate_final=False)
+        v = V_net(observations)
+        return jnp.squeeze(v, -1)
 
 def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):    
     if isinstance(icvf_cls_or_name, str):
@@ -152,7 +168,73 @@ class MultilinearVF(nn.Module):
             'psi_z': psi_z,
         }
 
+def apply_layernorm(x):
+    net_def = nn.LayerNorm(use_bias=False, use_scale=False)
+    return net_def.apply({'params': {}}, x)
+
+class EncoderVF(PyTreeNode):
+    rng: PRNGKeyArray
+    net: TrainState
+    target_net: TrainState
+    
+    @classmethod
+    def create(
+        cls,
+        seed:int,
+        observation_space: gymnasium.Space,
+        action_space: gymnasium.Space,
+        latent_dim: int = 16,
+        hidden_dims: Sequence[int] = (64, 64, 64)
+    ):
+        rng = jax.random.PRNGKey(seed)
+        rng, key1, key2 = jax.random.split(rng, 3)
+        
+        encoder_source = MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True)
+        net_def = CrossDomainAlign(
+            encoder_source=encoder_source
+        )
+        params = net_def.init(key1, observation_space.sample())
+        net = TrainState.create(
+            model_def=net_def,
+            params=params
+        )
+        target_net = TrainState.create(
+            model_def=net_def,
+            params=params
+        )
+        return cls(
+            rng=rng,
+            net=net,
+            target_net=target_net
+        )
+    
+    @jax.jit
+    def _update(self, batch):
+        def loss_fn(params):
+            def get_v(params, obs, s_next):
+                encoded_s = apply_layernorm(self.net(obs, params=params))
+                encoded_snext = apply_layernorm(self.net(s_next, params=params))
+                return -1 * optax.safe_norm(encoded_s - encoded_snext, 1e-3, axis=-1)
+            
+            V = get_v(params, batch.observations, batch.goals) # d(s, s+)
+            nV = get_v(params, batch.next_observations, batch.goals) #d(s', s+)
+            target_V = batch.rewards + 0.99 * batch.masks * nV
+            
+            def expectile_fn(diff, expectile:float=0.9):
+                weight = jnp.where(diff >= 0, expectile, 1-expectile)
+                return weight * diff ** 2
+            
+            diff = (V - target_V)
+            loss = expectile_fn(diff, 0.9).mean()
+            return loss, {'icvf_loss': loss}
+            
+        net, info = self.net.apply_loss_fn(loss_fn=loss_fn, has_aux=True)
+        target_params = optax.incremental_update(self.net.params, self.target_net.params, 0.005)
+        target_net = self.target_net.replace(params=target_params)
+        return self.replace(net=net, target_net=target_net), info
+    
 icvfs = {
+    'encodervf': EncoderVF,
     'multilinear': MultilinearVF,
     'monolithic': MonolithicVF,
 }
