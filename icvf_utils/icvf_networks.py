@@ -214,12 +214,12 @@ class EncoderVF(PyTreeNode):
             def get_v(params, obs, s_next):
                 encoded_s = apply_layernorm(self.net(obs, params=params))
                 encoded_snext = apply_layernorm(self.net(s_next, params=params))
-                return -1 * optax.safe_norm(encoded_s - encoded_snext, 1e-3, axis=-1)
+                return -1 * optax.safe_norm(encoded_s - encoded_snext, 1e-3, ord='fro', axis=-1)
             
             V = get_v(params, batch.observations, batch.goals) # d(s, s+)
             nV = get_v(params, batch.next_observations, batch.goals) #d(s', s+)
             target_V = batch.rewards + 0.99 * batch.masks * nV
-            
+
             def expectile_fn(diff, expectile:float=0.9):
                 weight = jnp.where(diff >= 0, expectile, 1-expectile)
                 return weight * diff ** 2
