@@ -15,6 +15,8 @@ import jax.numpy as jnp
 from ott.tools.sinkhorn_divergence import sinkhorn_divergence
 from ott.geometry import pointcloud
 import random
+from orbax.checkpoint import PyTreeCheckpointer
+from flax.training import orbax_utils
 import optax
 from ott.neural import models
 
@@ -28,8 +30,7 @@ from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
 from agents.notdual import JointAgent
 from networks.common import LayerNormMLP
-from icvf_utils.icvf_networks import create_icvf
-from icvf_utils.icvf_learner import create_learner
+from icvf_utils.icvf_networks import EncoderVF
 from jaxrl_m.common import TrainState
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
@@ -159,10 +160,9 @@ def collect_expert(cfg: DictConfig) -> None:
     # Whether to train encoder based on ICVF -> Then use as frozen or extract
     # trained enc params and init new for further training
     if cfg.encoders_icvf:
-        icvf = StateEncoderICVF.create(
+        icvf_enc = EncoderVF.create(
             cfg.seed,
-            eval_env.observation_space.sample(),
-            eval_env.action_space.sample(),
+            eval_env.observation_space
         )
         
     neural_f = models.MLP(
@@ -180,8 +180,10 @@ def collect_expert(cfg: DictConfig) -> None:
     optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
 
     not_agent = JointAgent(
-        encoder_agent, 
-        encoder_expert, 
+        icvf_enc=icvf_enc,
+        embed_dim=2,
+        # encoder_agent, 
+        # encoder_expert, 
         agent_dim=eval_env.observation_space.shape[0],
         expert_dim=source_expert_ds.observations.shape[-1],
         neural_f=neural_f,
@@ -193,9 +195,21 @@ def collect_expert(cfg: DictConfig) -> None:
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
-    # Stage 1. Pretrain ICVF+Encoders
+    # Stage 1. Pretrain Encoders
     ###
-    
+    pbar = tqdm(range(100_000), leave=True)
+    for i in pbar:
+        agent_data = target_random_buffer.sample(1024, icvf=True)
+        icvf_enc, info = icvf_enc.update(agent_data)
+        
+    ckptr = PyTreeCheckpointer()
+    ckptr.save(
+        os.getcwd() + "/saved_encoder",
+        icvf_enc,
+        force=True,
+        save_args=orbax_utils.save_args_from_target(icvf_enc),
+    )
+    exit()
     # Stage 2. PRETRAIN Neural OT
     pbar = tqdm(range(5_000), leave=True)
     for i in pbar:

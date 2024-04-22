@@ -182,21 +182,21 @@ class EncoderVF(PyTreeNode):
         cls,
         seed:int,
         observation_space: gymnasium.Space,
-        action_space: gymnasium.Space,
         latent_dim: int = 16,
-        hidden_dims: Sequence[int] = (64, 64, 64)
+        hidden_dims: Sequence[int] = (32, 32, 32)
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1, key2 = jax.random.split(rng, 3)
         
         encoder_source = MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True)
         net_def = CrossDomainAlign(
-            encoder_source=encoder_source
+            encoder=encoder_source
         )
-        params = net_def.init(key1, observation_space.sample())
+        params = net_def.init(key1, observation_space.sample())['params']
         net = TrainState.create(
             model_def=net_def,
-            params=params
+            params=params,
+            tx=optax.adam(learning_rate=3e-4)
         )
         target_net = TrainState.create(
             model_def=net_def,
@@ -209,12 +209,12 @@ class EncoderVF(PyTreeNode):
         )
     
     @jax.jit
-    def _update(self, batch):
+    def update(self, batch):
         def loss_fn(params):
             def get_v(params, obs, s_next):
                 encoded_s = apply_layernorm(self.net(obs, params=params))
                 encoded_snext = apply_layernorm(self.net(s_next, params=params))
-                return -1 * optax.safe_norm(encoded_s - encoded_snext, 1e-3, ord='fro', axis=-1)
+                return -1 * optax.safe_norm(encoded_s - encoded_snext, 1e-3, axis=-1)
             
             V = get_v(params, batch.observations, batch.goals) # d(s, s+)
             nV = get_v(params, batch.next_observations, batch.goals) #d(s', s+)

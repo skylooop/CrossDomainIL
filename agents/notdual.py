@@ -88,8 +88,7 @@ def compute_embeds(encoders, batch_agent, batch_expert, random_data):
 class JointAgent:
     def __init__(
         self,
-        encoder_agent: nn.Module,
-        encoder_expert: nn.Module,
+        icvf_enc,
         agent_dim: int,
         expert_dim: int,
         embed_dim: int,
@@ -104,16 +103,17 @@ class JointAgent:
 
         self.expert_loss_coef = expert_loss_coef
 
-        encoders = Encoders({
-            'agent_encoder': encoder_agent,
-            'expert_encoder': encoder_expert
-        })
+        # encoders = Encoders({
+        #     'agent_encoder': encoder_agent,
+        #     'expert_encoder': encoder_expert
+        # })
 
-        self.encoders_state = TrainState.create(
-            model_def=encoders,
-            params=encoders.init(rng, jnp.ones(agent_dim), jnp.ones(expert_dim))['params'],
-            tx=optax.adam(learning_rate=learning_rate)
-        )
+        # self.encoders_state = TrainState.create(
+        #     model_def=encoders,
+        #     params=encoders.init(rng, jnp.ones(agent_dim), jnp.ones(expert_dim))['params'],
+        #     tx=optax.adam(learning_rate=learning_rate)
+        # )
+        self.encoders_vf = icvf_enc
 
         self.neural_dual_elements = W2NeuralDualCustom(
             dim_data=embed_dim, 
@@ -170,7 +170,7 @@ class JointAgent:
     #     loss = loss_elem - loss_pairs * expert_loss_coef
 
     #     return loss, loss_elem, loss_pairs
-        
+
     def optimize_not(self, batch_agent, batch_expert, random_data):
         sa, se, sn, sa_pairs, se_pairs, sn_pairs = compute_embeds(self.encoders_state, batch_agent, batch_expert, random_data)
         _, loss_elem, w_dist_elem = self.neural_dual_elements.update(np.concatenate([sa, sn]), np.concatenate([se, se]))

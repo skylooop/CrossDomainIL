@@ -38,9 +38,8 @@ class CrossDomainAlign(nn.Module):
     vf_def: Type[nn.Module] = None
     
     @nn.compact
-    def __call__(self, obs: jnp.ndarray, next_obs: jnp.ndarray) -> Dict[str, np.ndarray]:
-        return {'encoded_obs': self.encoder_source(obs),
-                'encoded_next': self.encoder_source(next_obs)}
+    def __call__(self, obs: jnp.ndarray) -> Dict[str, np.ndarray]:
+        return self.encoder(obs)
         
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
