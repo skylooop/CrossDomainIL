@@ -135,9 +135,8 @@ def collect_expert(cfg: DictConfig) -> None:
         eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
     
-    source_expert_ds, source_random_ds, target_random_buffer = prepare_buffers_for_il(cfg=cfg, target_obs_space=eval_env.observation_space,
+    source_expert_ds, source_random_ds, combined_source_ds, target_random_buffer = prepare_buffers_for_il(cfg=cfg, target_obs_space=eval_env.observation_space,
                                                                                           target_act_space=eval_env.action_space)
-    
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
     
@@ -160,10 +159,15 @@ def collect_expert(cfg: DictConfig) -> None:
     # Whether to train encoder based on ICVF -> Then use as frozen or extract
     # trained enc params and init new for further training
     if cfg.encoders_icvf:
+        from datasets.gc_dataset import GCSDataset
+        
         icvf_enc = EncoderVF.create(
             cfg.seed,
-            eval_env.observation_space
+            target_random_buffer.observations[0]
+            #combined_source_ds.observations[0]
         )
+        gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, 
+                                            **GCSDataset.get_default_config())
         
     neural_f = models.MLP(
         dim_hidden=[128, 128, 128, 128],
@@ -197,9 +201,10 @@ def collect_expert(cfg: DictConfig) -> None:
     
     # Stage 1. Pretrain Encoders
     ###
-    pbar = tqdm(range(100_000), leave=True)
+    pbar = tqdm(range(75_000), leave=True)
     for i in pbar:
-        agent_data = target_random_buffer.sample(1024, icvf=True)
+        #agent_data = gc_icvf_dataset_target.sample(512) #target_random_buffer.sample(512, icvf=True)
+        agent_data = target_random_buffer.sample(512, icvf=True)
         icvf_enc, info = icvf_enc.update(agent_data)
         
     ckptr = PyTreeCheckpointer()

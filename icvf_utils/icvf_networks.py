@@ -8,8 +8,7 @@ import jax.numpy as jnp
 from flax.struct import PyTreeNode
 from jaxtyping import PRNGKeyArray
 from jaxrl_m.common import TrainState
-
-import gymnasium
+from jaxtyping import ArrayLike
 import optax
 
 class LayerNormMLP(nn.Module):
@@ -181,18 +180,18 @@ class EncoderVF(PyTreeNode):
     def create(
         cls,
         seed:int,
-        observation_space: gymnasium.Space,
-        latent_dim: int = 16,
-        hidden_dims: Sequence[int] = (32, 32, 32)
+        observation_sample: ArrayLike,
+        latent_dim: int = 8,
+        hidden_dims: Sequence[int] = (32, 32, 32, 32)
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1, key2 = jax.random.split(rng, 3)
         
-        encoder_source = MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True)
+        encoder_source = MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True, activations=jax.nn.gelu)
         net_def = CrossDomainAlign(
             encoder=encoder_source
         )
-        params = net_def.init(key1, observation_space.sample())['params']
+        params = net_def.init(key1, observation_sample)['params']
         net = TrainState.create(
             model_def=net_def,
             params=params,

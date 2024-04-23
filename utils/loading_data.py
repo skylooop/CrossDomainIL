@@ -22,6 +22,13 @@ def prepare_buffers_for_il(cfg, target_obs_space, target_act_space):
                            next_observations=expert_random['next_observations'],
                            size=expert_random['observations'].shape[0])
     
+    combined_source_ds = expert_source_ds.add_data(observations=expert_random['observations'],
+                           actions=expert_random['actions'],
+                           rewards=expert_random['rewards'],
+                           dones_float=expert_random['dones'],
+                           masks=1.0 - expert_random['dones'],
+                           next_observations=expert_random['next_observations'])
+    
     target_dataset_random = Dataset(observations=target_random['observations'],
                            actions=target_random['actions'],
                            rewards=target_random['rewards'],
@@ -36,4 +43,4 @@ def prepare_buffers_for_il(cfg, target_obs_space, target_act_space):
     target_random_buffer = ReplayBuffer(observation_space=target_obs_space, action_space=target_act_space, capacity=cfg.algo.buffer_size)
     target_random_buffer.initialize_with_dataset(target_dataset_random)
     
-    return expert_source_ds, non_expert_source_dataset, target_random_buffer
+    return expert_source_ds, non_expert_source_dataset, combined_source_ds, target_random_buffer

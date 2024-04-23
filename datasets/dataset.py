@@ -12,6 +12,7 @@ Batch = collections.namedtuple(
 ICVF_output = collections.namedtuple(
     'ICVF_output',
     ['observations', 'actions', 'rewards', 'masks', 'next_observations', 'goals'])
+
 def split_into_trajectories(observations, actions, rewards, masks, dones_float,
                             next_observations):
     trajs = [[]]
@@ -80,8 +81,23 @@ class Dataset:
         goal_indx = np.where(np.random.rand(batch_size) < 0.2, indx, goal_indx)
         return goal_indx
     
+    def add_data(self, observations: np.ndarray, actions: np.ndarray,
+                 rewards: np.ndarray, masks: np.ndarray,
+                 dones_float: np.ndarray, next_observations: np.ndarray):
+        self.size += len(observations)
+        self.observations = np.concatenate([self.observations, observations], axis=0)
+        self.actions = np.concatenate([self.actions, actions], axis=0)
+        self.rewards = np.concatenate([self.rewards, rewards], axis=0)
+        self.masks = np.concatenate([self.masks, masks], axis=0)
+        self.dones_float = np.concatenate([self.dones_float, dones_float], axis=0)
+        self.next_observations = np.concatenate([self.next_observations, next_observations], axis=0)
+        self.terminal_locs, = np.nonzero(self.dones_float > 0)
+
+        return self
+    
     def sample(self, batch_size: int, icvf: bool = False) -> Batch:
         indx = np.random.randint(self.size, size=batch_size)
+        #old
         if icvf:
             goal_indx = self.sample_goals(indx)            
             success = (indx == goal_indx)
