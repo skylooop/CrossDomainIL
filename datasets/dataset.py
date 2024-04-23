@@ -97,7 +97,6 @@ class Dataset:
     
     def sample(self, batch_size: int, icvf: bool = False) -> Batch:
         indx = np.random.randint(self.size, size=batch_size)
-        #old
         if icvf:
             goal_indx = self.sample_goals(indx)            
             success = (indx == goal_indx)

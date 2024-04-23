@@ -163,10 +163,10 @@ def collect_expert(cfg: DictConfig) -> None:
         
         icvf_enc = EncoderVF.create(
             cfg.seed,
-            target_random_buffer.observations[0]
-            #combined_source_ds.observations[0]
+            #target_random_buffer.observations[0]
+            combined_source_ds.observations[0]
         )
-        gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, 
+        gc_icvf_dataset_target = GCSDataset(dataset=combined_source_ds, #target_random_buffer, 
                                             **GCSDataset.get_default_config())
         
     neural_f = models.MLP(
@@ -201,10 +201,10 @@ def collect_expert(cfg: DictConfig) -> None:
     
     # Stage 1. Pretrain Encoders
     ###
-    pbar = tqdm(range(75_000), leave=True)
+    pbar = tqdm(range(50_000), leave=True)
     for i in pbar:
-        #agent_data = gc_icvf_dataset_target.sample(512) #target_random_buffer.sample(512, icvf=True)
-        agent_data = target_random_buffer.sample(512, icvf=True)
+        agent_data = source_random_ds.sample(512, icvf=True) #target_random_buffer.sample(512, icvf=True)
+        #agent_data = target_random_buffer.sample(512, icvf=True)
         icvf_enc, info = icvf_enc.update(agent_data)
         
     ckptr = PyTreeCheckpointer()
