@@ -10,6 +10,7 @@ from jaxtyping import PRNGKeyArray
 from jaxrl_m.common import TrainState
 from jaxtyping import ArrayLike
 import optax
+from networks.common import FourierFeatures
 
 class LayerNormMLP(nn.Module):
     hidden_dims: Sequence[int]
@@ -166,7 +167,16 @@ class MultilinearVF(nn.Module):
             'phi_z': phi_z,
             'psi_z': psi_z,
         }
-
+        
+class FourierMLP(nn.Module):
+    fourier_net: nn.Module
+    mlp: nn.Module
+    
+    @nn.compact
+    def __call__(self, x):
+        fourier_feat = self.fourier_net(x)
+        return self.mlp(fourier_feat)
+    
 def apply_layernorm(x):
     net_def = nn.LayerNorm(use_bias=False, use_scale=False)
     return net_def.apply({'params': {}}, x)
@@ -181,13 +191,18 @@ class EncoderVF(PyTreeNode):
         cls,
         seed:int,
         observation_sample: ArrayLike,
-        latent_dim: int = 8,
-        hidden_dims: Sequence[int] = (32, 32, 32, 32)
+        latent_dim: int = 4,
+        hidden_dims: Sequence[int] = (8, 8, 8) # (32, 32, 32) - works good
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1, key2 = jax.random.split(rng, 3)
         
-        encoder_source = MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True, activations=jax.nn.gelu)
+        # encoder_source = FourierMLP(
+        #     fourier_net=FourierFeatures(output_size=32, learnable=True),
+        #     mlp=MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True, activations=jax.nn.gelu
+        # ))
+        encoder_source = MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True,
+                             activations=jax.nn.gelu)
         net_def = CrossDomainAlign(
             encoder=encoder_source
         )
@@ -210,10 +225,12 @@ class EncoderVF(PyTreeNode):
     @jax.jit
     def update(self, batch):
         def loss_fn(params):
-            def get_v(params, obs, s_next):
+            def get_v(params, obs, goal):
                 encoded_s = apply_layernorm(self.net(obs, params=params))
-                encoded_snext = apply_layernorm(self.net(s_next, params=params))
-                return -1 * optax.safe_norm(encoded_s - encoded_snext, 1e-3, axis=-1)
+                encoded_snext = apply_layernorm(self.net(goal, params=params))
+                dist = optax.safe_norm(encoded_s - encoded_snext, 1e-3, axis=-1)
+                #dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
+                return -1 * dist
             
             V = get_v(params, batch.observations, batch.goals) # d(s, s+)
             nV = get_v(params, batch.next_observations, batch.goals) #d(s', s+)

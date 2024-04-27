@@ -135,8 +135,9 @@ def collect_expert(cfg: DictConfig) -> None:
         eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
     
-    source_expert_ds, source_random_ds, combined_source_ds, target_random_buffer = prepare_buffers_for_il(cfg=cfg, target_obs_space=eval_env.observation_space,
-                                                                                          target_act_space=eval_env.action_space)
+    source_expert_ds, source_random_ds, combined_source_ds, target_random_buffer = prepare_buffers_for_il(cfg=cfg,
+                                                                                                          target_obs_space=eval_env.observation_space,
+                                                                                                          target_act_space=eval_env.action_space)
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
     
@@ -164,6 +165,7 @@ def collect_expert(cfg: DictConfig) -> None:
         icvf_enc = EncoderVF.create(
             cfg.seed,
             #target_random_buffer.observations[0]
+            #source_random_ds.observations[0]
             combined_source_ds.observations[0]
         )
         gc_icvf_dataset_target = GCSDataset(dataset=combined_source_ds, #target_random_buffer, 
@@ -201,10 +203,10 @@ def collect_expert(cfg: DictConfig) -> None:
     
     # Stage 1. Pretrain Encoders
     ###
-    pbar = tqdm(range(50_000), leave=True)
+    pbar = tqdm(range(75_000), leave=True)
     for i in pbar:
-        agent_data = source_random_ds.sample(512, icvf=True) #target_random_buffer.sample(512, icvf=True)
-        #agent_data = target_random_buffer.sample(512, icvf=True)
+        #agent_data = gc_icvf_dataset_target.sample(512)
+        agent_data = combined_source_ds.sample(512, icvf=True) #target_random_buffer
         icvf_enc, info = icvf_enc.update(agent_data)
         
     ckptr = PyTreeCheckpointer()

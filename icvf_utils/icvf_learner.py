@@ -148,3 +148,19 @@ def create_learner(
         ))
 
         return ICVFAgent(rng=rng, value=value, target_value=target_value, config=config)
+    
+def get_default_config():
+    config = ml_collections.ConfigDict({
+        'optim_kwargs': {
+            'learning_rate': 3e-4,
+            'eps': 0.0003125
+        }, # LR for vision here. For FC, use standard 1e-3
+        'discount': 0.99,
+        'expectile': 0.9,  # The actual tau for expectiles.
+        'target_update_rate': 0.005,  # For soft target updates.
+        'no_intent': False,
+        'min_q': True,
+        'periodic_target_update': False,
+    })
+
+    return config

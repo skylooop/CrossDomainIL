@@ -32,15 +32,58 @@ import jax.numpy as jnp
 def default_init(scale: Optional[float] = 1.0):
     return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
 
-
 class CrossDomainAlign(nn.Module):
     encoder: Type[nn.Module]
-    vf_def: Type[nn.Module] = None
     
     @nn.compact
     def __call__(self, obs: jnp.ndarray) -> Dict[str, np.ndarray]:
         return self.encoder(obs)
-        
+
+class MLPResNetBlock(nn.Module):
+    features: int
+    act: Callable
+    dropout_rate: float = None
+    use_layer_norm: bool = False
+
+    @nn.compact
+    def __call__(self, x, train: bool = False):
+        residual = x
+        if self.dropout_rate is not None and self.dropout_rate > 0:
+            x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=not train)
+        if self.use_layer_norm:
+            x = nn.LayerNorm()(x)
+        x = nn.Dense(self.features * 4)(x)
+        x = self.act(x)
+        x = nn.Dense(self.features)(x)
+
+        if residual.shape != x.shape:
+            residual = nn.Dense(self.features)(residual)
+
+        return residual + x
+    
+class MLPResNet(nn.Module):
+    num_blocks: int
+    out_dim: int
+    dropout_rate: float = None
+    use_layer_norm: bool = False
+    hidden_dim: int = 256
+    activations: Callable = nn.swish
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+        x = nn.Dense(self.hidden_dim, kernel_init=default_init())(x)
+        for _ in range(self.num_blocks):
+            x = MLPResNetBlock(
+                self.hidden_dim,
+                act=self.activations,
+                use_layer_norm=self.use_layer_norm,
+                dropout_rate=self.dropout_rate,
+            )(x, train=train)
+
+        x = self.activations(x)
+        x = nn.Dense(self.out_dim, kernel_init=default_init())(x)
+        return x
+    
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
