@@ -11,7 +11,7 @@ Batch = collections.namedtuple(
 
 ICVF_output = collections.namedtuple(
     'ICVF_output',
-    ['observations', 'actions', 'rewards', 'masks', 'next_observations', 'goals'])
+    ['observations', 'actions', 'rewards', 'masks', 'next_observations', 'goals', 'next_goals', 'middle_goal', "middle_goal_dist"])
 
 def split_into_trajectories(observations, actions, rewards, masks, dones_float,
                             next_observations):
@@ -98,7 +98,16 @@ class Dataset:
     def sample(self, batch_size: int, icvf: bool = False) -> Batch:
         indx = np.random.randint(self.size, size=batch_size)
         if icvf:
-            goal_indx = self.sample_goals(indx)            
+            goal_indx = self.sample_goals(indx)   
+
+            # Goals from the same trajectory
+            # print("L=", len(self.dones_float))
+            final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]    
+            distance = np.random.rand(batch_size)
+            middle_goal_indx = np.round(((indx) * distance + final_state_indx * (1- distance))).astype(int)
+
+            goal_indx = np.where(np.random.rand(batch_size) < 0.5, middle_goal_indx, goal_indx)
+
             success = (indx == goal_indx)
             rewards = success.astype(float) - 1
             return ICVF_output(observations=self.observations[indx],
@@ -106,6 +115,9 @@ class Dataset:
                      rewards=rewards,
                      masks=1.0 - success.astype(float),
                      goals=jax.tree_util.tree_map(lambda arr: arr[goal_indx], self.observations),
+                     middle_goal=None,
+                     middle_goal_dist=None,
+                     next_goals=jax.tree_util.tree_map(lambda arr: arr[goal_indx], self.next_observations),
                      next_observations=self.next_observations[indx])
             
         return Batch(observations=self.observations[indx],

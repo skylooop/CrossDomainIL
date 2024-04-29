@@ -210,11 +210,11 @@ class EncoderVF(PyTreeNode):
         net = TrainState.create(
             model_def=net_def,
             params=params,
-            tx=optax.adam(learning_rate=3e-4)
+            tx=optax.adam(learning_rate=1e-4, eps=0.0003125)
         )
         target_net = TrainState.create(
             model_def=net_def,
-            params=params
+            params=params.copy()
         )
         return cls(
             rng=rng,
@@ -228,20 +228,32 @@ class EncoderVF(PyTreeNode):
             def get_v(params, obs, goal):
                 encoded_s = apply_layernorm(self.net(obs, params=params))
                 encoded_snext = apply_layernorm(self.net(goal, params=params))
-                dist = optax.safe_norm(encoded_s - encoded_snext, 1e-3, axis=-1)
-                #dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
+                # dist = optax.safe_norm(encoded_s - encoded_snext, 1e-5, axis=-1) 
+                dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
+                return -1 * dist
+            
+            def get_target_v(obs, goal):
+                encoded_s = apply_layernorm(self.target_net(obs))
+                encoded_snext = apply_layernorm(self.target_net(goal))
+                # dist = optax.safe_norm(encoded_s - encoded_snext, 1e-5, axis=-1) 
+                dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
                 return -1 * dist
             
             V = get_v(params, batch.observations, batch.goals) # d(s, s+)
-            nV = get_v(params, batch.next_observations, batch.goals) #d(s', s+)
+            # V_mid = get_v(params, batch.observations, batch.middle_goal) # d(s, s+)
+            nV_1 = get_target_v(batch.next_observations, batch.goals) # d(s', s+)
+            nV_2 = get_target_v(batch.next_goals, batch.observations) # d(s, s+')
+            nV = jax.lax.stop_gradient(jnp.maximum(nV_1, nV_2))
             target_V = batch.rewards + 0.99 * batch.masks * nV
 
             def expectile_fn(diff, expectile:float=0.9):
                 weight = jnp.where(diff >= 0, expectile, 1-expectile)
                 return weight * diff ** 2
             
-            diff = (V - target_V)
+            diff = (target_V - V)
+            # diff_2 = (-batch.middle_goal_dist - V_mid)
             loss = expectile_fn(diff, 0.9).mean()
+            # loss_2 = expectile_fn(diff_2, 0.9).mean()
             return loss, {'icvf_loss': loss}
             
         net, info = self.net.apply_loss_fn(loss_fn=loss_fn, has_aux=True)

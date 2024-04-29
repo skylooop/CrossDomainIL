@@ -7,7 +7,8 @@ os.environ['HYDRA_FULL_ERROR'] = '1'
 import hydra
 import rootutils
 from omegaconf import DictConfig, OmegaConf
-
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 from tqdm.auto import tqdm
 import numpy as np
 import jax
@@ -18,7 +19,7 @@ import random
 from orbax.checkpoint import PyTreeCheckpointer
 from flax.training import orbax_utils
 import optax
-from ott.neural import models
+from ott.neural import networks as models
 
 import matplotlib.pyplot as plt
 import wandb
@@ -164,19 +165,22 @@ def collect_expert(cfg: DictConfig) -> None:
         
         icvf_enc = EncoderVF.create(
             cfg.seed,
-            #target_random_buffer.observations[0]
+            # target_random_buffer.observations[0],
+            combined_source_ds.observations[0],
+            hidden_dims=(32, 32, 32),
+            latent_dim=32
             #source_random_ds.observations[0]
-            combined_source_ds.observations[0]
+            #combined_source_ds.observations[0]
         )
         gc_icvf_dataset_target = GCSDataset(dataset=combined_source_ds, #target_random_buffer, 
                                             **GCSDataset.get_default_config())
         
-    neural_f = models.MLP(
+    neural_f = models.potentials.PotentialMLP(
         dim_hidden=[128, 128, 128, 128],
         is_potential=True,
         act_fn=jax.nn.leaky_relu
     )
-    neural_g = models.MLP(
+    neural_g = models.potentials.PotentialMLP(
         dim_hidden=[128, 128, 128, 128],
         is_potential=True,
         act_fn=jax.nn.leaky_relu
@@ -203,11 +207,28 @@ def collect_expert(cfg: DictConfig) -> None:
     
     # Stage 1. Pretrain Encoders
     ###
-    pbar = tqdm(range(75_000), leave=True)
+    pbar = tqdm(range(650_000), leave=True)
     for i in pbar:
-        #agent_data = gc_icvf_dataset_target.sample(512)
+        # agent_data = gc_icvf_dataset_target.sample(512)
+        # agent_data = target_random_buffer.sample(512, icvf=True) #target_random_buffer
         agent_data = combined_source_ds.sample(512, icvf=True) #target_random_buffer
         icvf_enc, info = icvf_enc.update(agent_data)
+
+        if i % 25_000 == 1:
+            
+            pca = PCA(n_components=2)
+            tsne = TSNE(n_components=2, perplexity=30, n_iter=1000)
+            
+            fitted_pca = pca.fit_transform(icvf_enc.net(agent_data.observations[:500]))
+            fitted_tsne = tsne.fit_transform(icvf_enc.net(agent_data.observations[:500]))
+
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+            fig.savefig(f"/home/nazar/projects/CrossDomainIL/pca/{i}pca.png")
+
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="pca")
+            fig.savefig(f"/home/nazar/projects/CrossDomainIL/pca/{i}tsne.png")
         
     ckptr = PyTreeCheckpointer()
     ckptr.save(
