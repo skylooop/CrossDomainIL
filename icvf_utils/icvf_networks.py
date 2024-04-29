@@ -210,7 +210,7 @@ class EncoderVF(PyTreeNode):
         net = TrainState.create(
             model_def=net_def,
             params=params,
-            tx=optax.adam(learning_rate=1e-4, eps=0.0003125)
+            tx=optax.adam(learning_rate=1e-4)
         )
         target_net = TrainState.create(
             model_def=net_def,
