@@ -18,25 +18,25 @@ import random
 from orbax.checkpoint import PyTreeCheckpointer
 from flax.training import orbax_utils
 import optax
-from ott.neural import models
 
 import matplotlib.pyplot as plt
 import wandb
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
 import functools
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
-from agents.notdual import JointAgent
-from networks.common import LayerNormMLP
-from icvf_utils.icvf_networks import EncoderVF
-from jaxrl_m.common import TrainState
+from agents.notdual import NotAgent
+from icvf_utils.icvf_networks import JointNOTAgent
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.record_video import RecordVideo
 
+import ott
 
 @functools.partial(jax.jit, static_argnums=2)
 def sinkhorn_loss(
@@ -61,6 +61,23 @@ def plot_embeddings(sn, se, tn) -> None:
     plt.savefig('plots/embedding.png')
     wandb.log({'Embeddings': wandb.Image(fig)})
     plt.close()
+
+def supply_rng(f, rng=jax.random.PRNGKey(0)):
+    """
+    Wrapper that supplies a jax random key to a function (using keyword `seed`).
+    Useful for stochastic policies that require randomness.
+
+    Similar to functools.partial(f, seed=seed), but makes sure to use a different
+    key for each new call (to avoid stale rng keys).
+
+    """
+
+    def wrapped(*args, **kwargs):
+        nonlocal rng
+        rng, key = jax.random.split(rng)
+        return f(*args, seed=key, **kwargs)
+
+    return wrapped
 
 @functools.partial(jax.jit, static_argnums=(1))
 def compute_reward_from_not(encoders, f_potential, f_params, agent_observations, agent_next_observations):
@@ -156,66 +173,146 @@ def collect_expert(cfg: DictConfig) -> None:
     #     restored_ckpt = checkpointer.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-04-21/15-07-38/saved_model")
     #     value_def = create_icvf("multilinear", hidden_dims=[512, 512, 512], ensemble=True)
     #     icvf_value = TrainState.create(value_def, params=restored_ckpt['value']['params'])
-    
-    # Whether to train encoder based on ICVF -> Then use as frozen or extract
-    # trained enc params and init new for further training
-    if cfg.encoders_icvf:
+
+    if cfg.optimal_transport:
         from datasets.gc_dataset import GCSDataset
         
-        icvf_enc = EncoderVF.create(
-            cfg.seed,
-            #target_random_buffer.observations[0]
-            #source_random_ds.observations[0]
-            combined_source_ds.observations[0]
+        neural_f = ott.neural.networks.potentials.PotentialMLP(
+            dim_hidden=[128, 128, 128, 128],
+            is_potential=True,
+            act_fn=jax.nn.leaky_relu
         )
-        gc_icvf_dataset_target = GCSDataset(dataset=combined_source_ds, #target_random_buffer, 
-                                            **GCSDataset.get_default_config())
+        neural_g = ott.neural.networks.potentials.PotentialMLP(
+            dim_hidden=[128, 128, 128, 128],
+            is_potential=True,
+            act_fn=jax.nn.leaky_relu
+        )
         
-    neural_f = models.MLP(
-        dim_hidden=[128, 128, 128, 128],
-        is_potential=True,
-        act_fn=jax.nn.leaky_relu
-    )
-    neural_g = models.MLP(
-        dim_hidden=[128, 128, 128, 128],
-        is_potential=True,
-        act_fn=jax.nn.leaky_relu
-    )
-    
-    optimizer_f = optax.adam(learning_rate=1e-4, b1=0.5, b2=0.99)
-    optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
+        optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
+        optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
 
-    not_agent = JointAgent(
-        icvf_enc=icvf_enc,
-        embed_dim=2,
-        # encoder_agent, 
-        # encoder_expert, 
-        agent_dim=eval_env.observation_space.shape[0],
-        expert_dim=source_expert_ds.observations.shape[-1],
-        neural_f=neural_f,
-        neural_g=neural_g,
-        optimizer_f=optimizer_f,
-        optimizer_g=optimizer_g,
-        num_train_iters=10_000,
-        expert_loss_coef=1.)
+        not_agent = NotAgent(
+            embed_dim=8,
+            neural_f=neural_f,
+            neural_g=neural_g,
+            optimizer_f=optimizer_f,
+            optimizer_g=optimizer_g,
+            num_train_iters=10_000,
+            expert_loss_coef=1.)
+        
+        joint_ot_agent = JointNOTAgent.create(
+            cfg.seed,
+            latent_dim=8,
+            not_agent=not_agent,
+            target_obs=target_random_buffer.observations[0],
+            source_obs=combined_source_ds.observations[0],
+        )
+        #gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, **GCSDataset.get_default_config())
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
-    # Stage 1. Pretrain Encoders
-    ###
-    pbar = tqdm(range(75_000), leave=True)
-    for i in pbar:
-        #agent_data = gc_icvf_dataset_target.sample(512)
-        agent_data = combined_source_ds.sample(512, icvf=True) #target_random_buffer
-        icvf_enc, info = icvf_enc.update(agent_data)
+    os.makedirs("viz_plots", exist_ok=True)
+    for i in tqdm(range(300_000), leave=True):
+        target_data = target_random_buffer.sample(512, icvf=True)
+        source_data = combined_source_ds.sample(512, icvf=True)
+        joint_ot_agent, info = joint_ot_agent.update(source_data, target_data)
         
+        if i % 1_000 == 1:
+            # Target domain
+            pca = PCA(n_components=2)
+            tsne = TSNE(n_components=2, perplexity=50, n_iter=1000)
+            encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
+            fitted_pca = pca.fit_transform(encoded_target)
+            fitted_tsne = tsne.fit_transform(encoded_target)
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+            fig.savefig(f"viz_plots/target_{i}_pca.png")
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+            fig.savefig(f"viz_plots/target_{i}_tsne.png")
+            
+            #####################################################################################
+            # Source domain
+            pca = PCA(n_components=2)
+            tsne = TSNE(n_components=2, perplexity=50, n_iter=1000)
+            encoded_source = joint_ot_agent.net(source_data.observations, method='encode_source')
+            fitted_pca = pca.fit_transform(encoded_source)
+            fitted_tsne = tsne.fit_transform(encoded_source)
+
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+            fig.savefig(f"viz_plots/source_{i}_pca.png")
+
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+            fig.savefig(f"viz_plots/source_{i}_tsne.png")
+            
     ckptr = PyTreeCheckpointer()
     ckptr.save(
-        os.getcwd() + "/saved_encoder",
-        icvf_enc,
+        os.getcwd() + "/saved_encoding_agent",
+        joint_ot_agent,
         force=True,
-        save_args=orbax_utils.save_args_from_target(icvf_enc),
+        save_args=orbax_utils.save_args_from_target(joint_ot_agent),
     )
+    
+    # Stage 1. Pretrain Encoders
+    ###
+    # os.makedirs("viz_plots", exist_ok=True)
+    # for i in tqdm(range(250_000), leave=True):
+    #     agent_data = target_random_buffer.sample(256, icvf=True)
+    #     icvf_enc_target, info = icvf_enc_target.update(agent_data)
+        
+    #     if i % 50_000 == 1:
+            
+    #         pca = PCA(n_components=2)
+    #         tsne = TSNE(n_components=2, perplexity=30, n_iter=1000)
+            
+    #         fitted_pca = pca.fit_transform(icvf_enc_target.net(agent_data.observations[:]))
+    #         fitted_tsne = tsne.fit_transform(icvf_enc_target.net(agent_data.observations[:]))
+
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+    #         fig.savefig(f"viz_plots/target_{i}_pca.png")
+
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+    #         fig.savefig(f"viz_plots/target_{i}_tsne.png")
+        
+    # ckptr = PyTreeCheckpointer()
+    # ckptr.save(
+    #     os.getcwd() + "/saved_encoder_target",
+    #     icvf_enc_target,
+    #     force=True,
+    #     save_args=orbax_utils.save_args_from_target(icvf_enc_target),
+    # )
+    # print("Finished Training Target Domain Encoder")
+    
+    # for i in tqdm(range(250_000), leave=True):
+    #     agent_data = combined_source_ds.sample(256, icvf=True)
+    #     icvf_enc_source, info = icvf_enc_source.update(agent_data)
+        
+    #     if i % 50_000 == 1:
+    #         pca = PCA(n_components=2)
+    #         tsne = TSNE(n_components=2, perplexity=30, n_iter=1000)
+            
+    #         fitted_pca = pca.fit_transform(icvf_enc_source.net(agent_data.observations[:]))
+    #         fitted_tsne = tsne.fit_transform(icvf_enc_source.net(agent_data.observations[:]))
+
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+    #         fig.savefig(f"viz_plots/source_{i}_pca.png")
+
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+    #         fig.savefig(f"viz_plots/source_{i}_tsne.png")
+    # ckptr = PyTreeCheckpointer()
+    # ckptr.save(
+    #     os.getcwd() + "/saved_encoder_source",
+    #     icvf_enc_source,
+    #     force=True,
+    #     save_args=orbax_utils.save_args_from_target(icvf_enc_source),
+    # )
+    # exit()
     exit()
     # Stage 2. PRETRAIN Neural OT
     pbar = tqdm(range(5_000), leave=True)

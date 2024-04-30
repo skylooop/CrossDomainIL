@@ -1,5 +1,7 @@
+import flax.jax_utils
+import flax.struct
 from jaxrl_m.typing import *
-from jaxrl_m.networks import MLP, get_latent, default_init, ensemblize, CrossDomainAlign
+from jaxrl_m.networks import MLP, get_latent, ensemblize, CrossDomainAlign, RelativeRepresentation
 
 import flax.linen as nn
 import jax
@@ -11,21 +13,7 @@ from jaxrl_m.common import TrainState
 from jaxtyping import ArrayLike
 import optax
 from networks.common import FourierFeatures
-
-class LayerNormMLP(nn.Module):
-    hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.gelu
-    activate_final: bool = False
-    kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = default_init()
-
-    @nn.compact
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        for i, size in enumerate(self.hidden_dims):
-            x = nn.Dense(size, kernel_init=self.kernel_init)(x)
-            if i + 1 < len(self.hidden_dims) or self.activate_final:                
-                x = self.activations(x)
-                x = nn.LayerNorm()(x)
-        return x
+import copy
 
 class ICVFWithEncoder(nn.Module):
     encoder: nn.Module
@@ -181,76 +169,150 @@ def apply_layernorm(x):
     net_def = nn.LayerNorm(use_bias=False, use_scale=False)
     return net_def.apply({'params': {}}, x)
 
-class EncoderVF(PyTreeNode):
+def compute_source_encoder_loss(net, params, batch):
+    def get_v(params, obs, goal):
+        encoded_s = apply_layernorm(net(obs, params=params, method='encode_source'))
+        encoded_snext = apply_layernorm(net(goal, params=params, method='encode_source'))
+        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
+        return -1 * dist
+    
+    def get_v_ema(obs, goal):
+        encoded_s = apply_layernorm(net(obs, method='encode_source_ema'))
+        encoded_snext = apply_layernorm(net(goal, method='encode_source_ema'))
+        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
+        return -1 * dist
+    
+    V = get_v(params, batch.observations, batch.goals) # d(s, s+)
+    nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
+    nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
+    nV = jnp.maximum(nV_1, nV_2)
+    target_V = batch.rewards + 0.99 * batch.masks * nV
+
+    def expectile_fn(diff, expectile:float=0.9):
+        weight = jnp.where(diff >= 0, expectile, 1-expectile)
+        return weight * diff ** 2
+    
+    diff = (target_V - V)
+    loss = expectile_fn(diff, 0.9).mean()
+    return loss, {'source_encoder_loss': loss}
+
+def compute_target_encoder_loss(net, params, batch):
+    def get_v(params, obs, goal):
+        encoded_s = apply_layernorm(net(obs, params=params, method='encode_target'))
+        encoded_snext = apply_layernorm(net(goal, params=params, method='encode_target'))
+        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
+        return -1 * dist
+    
+    def get_v_ema(obs, goal):
+        encoded_s = apply_layernorm(net(obs, method='encode_target_ema'))
+        encoded_snext = apply_layernorm(net(goal, method='encode_target_ema'))
+        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
+        return -1 * dist
+    
+    V = get_v(params, batch.observations, batch.goals) # d(s, s+)
+    nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
+    nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
+    nV = jnp.maximum(nV_1, nV_2)
+    target_V = batch.rewards + 0.99 * batch.masks * nV
+
+    def expectile_fn(diff, expectile:float=0.9):
+        weight = jnp.where(diff >= 0, expectile, 1-expectile)
+        return weight * diff ** 2
+    
+    diff = (target_V - V)
+    loss = expectile_fn(diff, 0.9).mean()
+    return loss, {'target_encoder_loss': loss}
+
+def compute_not_distance(network, params, source_batch, target_batch): 
+    encoded_source = network(source_batch.observations, params=params, method='encode_source')   
+    encoded_target = network(target_batch.observations, params=params, method='encode_target')
+    #w2_class, loss_elem_not, w_dist_elem_not = network(encoded_source, encoded_target, method='estimate_ot')
+    # loss = -(w2_class.state_f.potential_value_fn(w2_class.state_f.params)(encoded_source) + \
+    #     w2_class.state_g.potential_value_fn(w2_class.state_g.params)(encoded_target)).mean()
+    f, g = network(method='get_potentials')
+    loss = -(jax.vmap(f)(encoded_source) + jax.vmap(g)(encoded_target)).mean()
+    return loss
+
+class JointNOTAgent(PyTreeNode):
     rng: PRNGKeyArray
     net: TrainState
-    target_net: TrainState
     
     @classmethod
     def create(
         cls,
-        seed:int,
-        observation_sample: ArrayLike,
-        latent_dim: int = 4,
-        hidden_dims: Sequence[int] = (8, 8, 8) # (32, 32, 32) - works good
+        seed: int,
+        source_obs: jnp.ndarray,
+        target_obs: jnp.ndarray,
+        latent_dim: int = 8,
+        not_agent: Any = None,
+        hidden_dims: Sequence[int] = (16, 16, 16)# (32, 32, 32) - works good
     ):
         rng = jax.random.PRNGKey(seed)
-        rng, key1, key2 = jax.random.split(rng, 3)
+        rng, key1 = jax.random.split(rng, 2)
         
         # encoder_source = FourierMLP(
         #     fourier_net=FourierFeatures(output_size=32, learnable=True),
         #     mlp=MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True, activations=jax.nn.gelu
         # ))
-        encoder_source = MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True,
-                             activations=jax.nn.gelu)
+        #encoder_source = MLP(hidden_dims=hidden_dims, activate_final=True, activations=jax.nn.gelu)
+        
+        encoder_source = RelativeRepresentation(layer_norm=True, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
+        encoder_target = RelativeRepresentation(layer_norm=True, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
         net_def = CrossDomainAlign(
-            encoder=encoder_source
+            source_encoder=encoder_source,
+            target_encoder=encoder_target,
+            ema_encoder_source=copy.deepcopy(encoder_source),
+            ema_encoder_target=copy.deepcopy(encoder_source),
+            not_estimator=not_agent
         )
-        params = net_def.init(key1, observation_sample)['params']
+        params = net_def.init(key1, source_obs, target_obs)['params']
         net = TrainState.create(
             model_def=net_def,
             params=params,
-            tx=optax.adam(learning_rate=3e-4)
-        )
-        target_net = TrainState.create(
-            model_def=net_def,
-            params=params
-        )
-        return cls(
-            rng=rng,
-            net=net,
-            target_net=target_net
-        )
+            tx=optax.multi_transform({'source_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=2e-4)),
+                                      'target_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=2e-4)),
+                                      "zero": optax.set_to_zero()},
+                                      param_labels={'source_encoder': "source_encoder", 'target_encoder': 'target_encoder',
+                                                    'ema_encoder_source': 'zero', 'ema_encoder_target': 'zero'}
+        ))
+        params['ema_encoder_source'] = net.params['source_encoder']
+        params['ema_encoder_target'] = net.params['target_encoder']
+        net = net.replace(params=params)
+        return cls(rng=rng, net=net)
     
     @jax.jit
-    def update(self, batch):
+    def update(self, source_batch, target_batch):
         def loss_fn(params):
-            def get_v(params, obs, goal):
-                encoded_s = apply_layernorm(self.net(obs, params=params))
-                encoded_snext = apply_layernorm(self.net(goal, params=params))
-                dist = optax.safe_norm(encoded_s - encoded_snext, 1e-3, axis=-1)
-                #dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
-                return -1 * dist
+            info = {}
             
-            V = get_v(params, batch.observations, batch.goals) # d(s, s+)
-            nV = get_v(params, batch.next_observations, batch.goals) #d(s', s+)
-            target_V = batch.rewards + 0.99 * batch.masks * nV
-
-            def expectile_fn(diff, expectile:float=0.9):
-                weight = jnp.where(diff >= 0, expectile, 1-expectile)
-                return weight * diff ** 2
+            source_enc_loss, source_enc_info = compute_source_encoder_loss(self.net, params, source_batch)
+            for k, v in source_enc_info.items():
+                info[f'source_enc/{k}'] = v
             
-            diff = (V - target_V)
-            loss = expectile_fn(diff, 0.9).mean()
-            return loss, {'icvf_loss': loss}
+            target_enc_loss, target_enc_info = compute_target_encoder_loss(self.net, params, target_batch)
+            for k, v in target_enc_info.items():
+                info[f'target_enc/{k}'] = v
             
+            not_loss = compute_not_distance(self.net, params, source_batch, target_batch)
+            # for k, v in not_info.items():
+            #     info[f'NOT/{k}'] = v
+            
+            loss = source_enc_loss + target_enc_loss + not_loss
+            return loss, info
+        
+        new_ema_params_source = optax.incremental_update(self.net.params['source_encoder'], self.net.params['ema_encoder_source'], 0.005)
+        new_ema_params_target = optax.incremental_update(self.net.params['target_encoder'], self.net.params['ema_encoder_target'], 0.005)
         net, info = self.net.apply_loss_fn(loss_fn=loss_fn, has_aux=True)
-        target_params = optax.incremental_update(self.net.params, self.target_net.params, 0.005)
-        target_net = self.target_net.replace(params=target_params)
-        return self.replace(net=net, target_net=target_net), info
-    
+        
+        params = net.params
+        params['ema_encoder_source'] = new_ema_params_source
+        params['ema_encoder_target'] = new_ema_params_target
+        new_net = net.replace(params=params)
+        
+        return self.replace(net=new_net), info
+        
 icvfs = {
-    'encodervf': EncoderVF,
+    'encodervf': JointNOTAgent,
     'multilinear': MultilinearVF,
     'monolithic': MonolithicVF,
 }

@@ -27,8 +27,9 @@ class ReplayBuffer(Dataset):
                          masks=masks,
                          dones_float=dones_float,
                          next_observations=next_observations,
-                         size=0)
-
+                         size=0,
+                         init_terminals=False)
+        
         self.size = 0
 
         self.insert_index = 0
@@ -62,6 +63,7 @@ class ReplayBuffer(Dataset):
 
         self.insert_index = num_samples
         self.size = num_samples
+        self.terminal_locs,  = np.nonzero(self.dones_float > 0)
 
     def insert(self, observation: np.ndarray, action: np.ndarray,
                reward: float, mask: float, done_float: float,
