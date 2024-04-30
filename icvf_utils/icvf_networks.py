@@ -14,6 +14,7 @@ from jaxtyping import ArrayLike
 import optax
 from networks.common import FourierFeatures
 import copy
+import functools
 
 class ICVFWithEncoder(nn.Module):
     encoder: nn.Module
@@ -280,8 +281,9 @@ class JointNOTAgent(PyTreeNode):
         net = net.replace(params=params)
         return cls(rng=rng, net=net)
     
+    #@functools.partial(jax.jit, static_argnames=('update_not'))
     @jax.jit
-    def update(self, source_batch, target_batch):
+    def update(self, source_batch, target_batch, update_not: bool):
         def loss_fn(params):
             info = {}
             
@@ -292,8 +294,8 @@ class JointNOTAgent(PyTreeNode):
             target_enc_loss, target_enc_info = compute_target_encoder_loss(self.net, params, target_batch)
             for k, v in target_enc_info.items():
                 info[f'target_enc/{k}'] = v
-            
-            not_loss = compute_not_distance(self.net, params, source_batch, target_batch)
+            #not_loss = compute_not_distance(self.net, params, source_batch, target_batch)
+            not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, params, source_batch, target_batch)
             # for k, v in not_info.items():
             #     info[f'NOT/{k}'] = v
             

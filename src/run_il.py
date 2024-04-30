@@ -215,9 +215,12 @@ def collect_expert(cfg: DictConfig) -> None:
     for i in tqdm(range(300_000), leave=True):
         target_data = target_random_buffer.sample(512, icvf=True)
         source_data = combined_source_ds.sample(512, icvf=True)
-        joint_ot_agent, info = joint_ot_agent.update(source_data, target_data)
+        if i % 10_000 == 0:
+            joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=True)
+        else:
+            joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=False)
         
-        if i % 1_000 == 1:
+        if i % 10_000 == 1:
             # Target domain
             pca = PCA(n_components=2)
             tsne = TSNE(n_components=2, perplexity=50, n_iter=1000)
