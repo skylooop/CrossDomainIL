@@ -290,10 +290,8 @@ class JointNOTAgent(PyTreeNode):
             target_enc_loss, target_enc_info = compute_target_encoder_loss(self.net, params, target_batch)
             for k, v in target_enc_info.items():
                 info[f'target_enc/{k}'] = v
-            #not_loss = compute_not_distance(self.net, params, source_batch, target_batch)
+                
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, params, source_batch, target_batch)
-            # for k, v in not_info.items():
-            #     info[f'NOT/{k}'] = v
             
             loss = source_enc_loss + target_enc_loss + not_loss
             return loss, info
@@ -308,13 +306,6 @@ class JointNOTAgent(PyTreeNode):
         new_net = net.replace(params=params)
         
         return self.replace(net=new_net), info
-    
-    @jax.jit
-    def update_not(self, source_batch, target_batch):
-        encoded_source = self.net(source_batch.observations, method='encode_source')   
-        encoded_target = self.net(target_batch.observations, method='encode_target')
-        loss, w_dist = self.net(encoded_source, encoded_target, method='update_not')
-        return {"loss": loss, "w_dist": w_dist}
         
 icvfs = {
     'encodervf': JointNOTAgent,

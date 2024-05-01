@@ -178,18 +178,18 @@ def collect_expert(cfg: DictConfig) -> None:
         from datasets.gc_dataset import GCSDataset
         
         neural_f = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[128, 128, 128, 128],
+            dim_hidden=[64, 64, 64, 64],
             is_potential=True,
-            act_fn=jax.nn.leaky_relu
+            act_fn=jax.nn.gelu
         )
         neural_g = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[128, 128, 128, 128],
+            dim_hidden=[64, 64, 64, 64],
             is_potential=True,
-            act_fn=jax.nn.leaky_relu
+            act_fn=jax.nn.gelu
         )
         
-        optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
-        optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
+        optimizer_f = optax.adamw(learning_rate=2e-4, b1=0.9, b2=0.999)
+        optimizer_g = optax.adamw(learning_rate=2e-4, b1=0.9, b2=0.999)
 
         not_agent = NotAgent(
             embed_dim=8,
@@ -220,12 +220,11 @@ def collect_expert(cfg: DictConfig) -> None:
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=False)
         
-        if i % 1_000 == 0:
-            for i in tqdm(range(500), desc="Updating NOT", position=1, leave=False):
-                target_data = target_random_buffer.sample(512, icvf=True)
-                source_data = combined_source_ds.sample(512, icvf=True)
-                not_info = joint_ot_agent.update_not(source_data, target_data)
-            print(not_info)
+        if i % 10_000 == 0:
+            for i in tqdm(range(1), desc="Updating NOT", position=1, leave=False):
+                target_data = target_random_buffer.sample(1024, icvf=True)
+                source_data = combined_source_ds.sample(1024, icvf=True)
+                encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
             
         if i % 10_000 == 1:
             # Target domain
@@ -256,6 +255,12 @@ def collect_expert(cfg: DictConfig) -> None:
             fig, ax = plt.subplots()
             ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
             fig.savefig(f"viz_plots/source_{i}_tsne.png")
+            
+            neural_dual_dist = joint_ot_agent.net(encoded_source, encoded_target, method='get_not_distance')
+            sinkhorn_dist = sinkhorn_loss(encoded_source, encoded_target)
+            
+            print(f"Neural dual distance between source and target data: {neural_dual_dist:.2f}")
+            print(f"Sinkhorn distance between source and target data: {sinkhorn_dist:.2f}")
             
     ckptr = PyTreeCheckpointer()
     ckptr.save(
@@ -324,23 +329,24 @@ def collect_expert(cfg: DictConfig) -> None:
     # )
     # exit()
     exit()
-    # Stage 2. PRETRAIN Neural OT
-    pbar = tqdm(range(5_000), leave=True)
-    for i in pbar:
-        agent_data = target_random_buffer.sample(1024)
-        expert_data = source_expert_ds.sample(1024)
-        random_data = source_random_ds.sample(1024)
-        loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+    
+    # # Stage 2. PRETRAIN Neural OT
+    # pbar = tqdm(range(5_000), leave=True)
+    # for i in pbar:
+    #     agent_data = target_random_buffer.sample(1024)
+    #     expert_data = source_expert_ds.sample(1024)
+    #     random_data = source_random_ds.sample(1024)
+    #     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
 
-        if i % 100 == 0:
-            #se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-            #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
-            sink = sinkhorn_loss(sa, se)
-            info = {"sink_dist": sink,
-                          "w_dist_elem": w_dist_elem,
-                          "w_dist_pairs": w_dist_pairs}
-            pbar.set_postfix(info)
-            wandb.log(info)
+    #     if i % 100 == 0:
+    #         #se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+    #         #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
+    #         sink = sinkhorn_loss(sa, se)
+    #         info = {"sink_dist": sink,
+    #                       "w_dist_elem": w_dist_elem,
+    #                       "w_dist_pairs": w_dist_pairs}
+    #         pbar.set_postfix(info)
+    #         wandb.log(info)
     
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
     for i in pbar:
