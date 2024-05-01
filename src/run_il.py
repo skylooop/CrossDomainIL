@@ -215,11 +215,18 @@ def collect_expert(cfg: DictConfig) -> None:
     for i in tqdm(range(300_000), leave=True):
         target_data = target_random_buffer.sample(512, icvf=True)
         source_data = combined_source_ds.sample(512, icvf=True)
-        if i % 10_000 == 0:
+        if i % 2_000 == 0:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=True)
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=False)
         
+        if i % 1_000 == 0:
+            for i in tqdm(range(500), desc="Updating NOT", position=1, leave=False):
+                target_data = target_random_buffer.sample(512, icvf=True)
+                source_data = combined_source_ds.sample(512, icvf=True)
+                not_info = joint_ot_agent.update_not(source_data, target_data)
+            print(not_info)
+            
         if i % 10_000 == 1:
             # Target domain
             pca = PCA(n_components=2)

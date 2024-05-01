@@ -107,6 +107,10 @@ class CrossDomainAlign(nn.Module):
         potentials = self.not_estimator.neural_dual_elements.to_dual_potentials()
         return potentials.f, potentials.g
     
+    def update_not(self, batch_source, batch_target):
+        _, loss, w_dist = self.not_estimator.neural_dual_elements.update(batch_source, batch_target)
+        return loss, w_dist
+    
     @nn.compact # for init only
     def __call__(self, source_obs: jnp.ndarray, target_obs: jnp.ndarray) -> Dict[str, np.ndarray]:
         return {
