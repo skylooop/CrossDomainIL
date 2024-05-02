@@ -203,21 +203,24 @@ def collect_expert(cfg: DictConfig) -> None:
             not_agent=not_agent,
             target_obs=target_random_buffer.observations[0],
             source_obs=combined_source_ds.observations[0],
+            dual_potentials=None
         )
         #gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, **GCSDataset.get_default_config())
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
-    for i in tqdm(range(5_000), desc="Pretraining NOT", position=1, leave=False):
+    for i in tqdm(range(2_000), desc="Pretraining NOT", position=1, leave=False):
         target_data = target_random_buffer.sample(1024, icvf=True)
         source_data = combined_source_ds.sample(1024, icvf=True)
-        encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
-
+        potentials, encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
+        joint_ot_agent = joint_ot_agent.replace(dual_potentials=potentials)
+        
     os.makedirs("viz_plots", exist_ok=True)
     for i in tqdm(range(200_001), leave=True):
-        target_data = target_random_buffer.sample(512, icvf=True)
-        source_data = combined_source_ds.sample(512, icvf=True)
-        if i % 30 == 0:
+        target_data = target_random_buffer.sample(256, icvf=True)
+        source_data = combined_source_ds.sample(256, icvf=True)
+                
+        if i % 20 == 0:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=True)
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=False)
@@ -226,8 +229,9 @@ def collect_expert(cfg: DictConfig) -> None:
             for i in tqdm(range(500), desc="Updating NOT", position=1, leave=False):
                 target_data = target_random_buffer.sample(1024, icvf=True)
                 source_data = combined_source_ds.sample(1024, icvf=True)
-                encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
-        
+                potentials, encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
+                joint_ot_agent = joint_ot_agent.replace(dual_potentials=potentials)
+                
         if i % 100_000 == 1:
             ckptr = PyTreeCheckpointer()
             ckptr.save(
@@ -279,6 +283,7 @@ def collect_expert(cfg: DictConfig) -> None:
         force=True,
         save_args=orbax_utils.save_args_from_target(joint_ot_agent),
     )
+    exit()
     # Stage 1. Pretrain Encoders
     ###
     # os.makedirs("viz_plots", exist_ok=True)

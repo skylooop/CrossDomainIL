@@ -224,16 +224,17 @@ def compute_target_encoder_loss(net, params, batch):
     loss = expectile_fn(diff, 0.9).mean()
     return loss, {'target_encoder_loss': loss}
 
-def compute_not_distance(network, params, source_batch, target_batch): 
+def compute_not_distance(network, potentials, params, source_batch, target_batch): 
     encoded_source = network(source_batch.observations, params=params, method='encode_source')   
     encoded_target = network(target_batch.observations, params=params, method='encode_target')
-    potentials = network(method='get_potentials')
+    #potentials = network(method='get_potentials')
     loss = -(jax.vmap(potentials.f)(encoded_source) + jax.vmap(potentials.g)(encoded_target)).mean()
     return loss
 
 class JointNOTAgent(PyTreeNode):
     rng: PRNGKeyArray
     net: TrainState
+    dual_potentials: Any
     
     @classmethod
     def create(
@@ -243,7 +244,9 @@ class JointNOTAgent(PyTreeNode):
         target_obs: jnp.ndarray,
         latent_dim: int = 4,
         not_agent: Any = None,
-        hidden_dims: Sequence[int] = (16, 16, 16, 16)# (32, 32, 32) - works good
+        hidden_dims_source: Sequence[int] = (16, 16, 16, 16),
+        hidden_dims_target: Sequence[int] = (32, 32, 32),
+        dual_potentials=None
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1 = jax.random.split(rng, 2)
@@ -254,21 +257,21 @@ class JointNOTAgent(PyTreeNode):
         # ))
         #encoder_source = MLP(hidden_dims=hidden_dims, activate_final=True, activations=jax.nn.gelu)
         
-        encoder_source = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
-        encoder_target = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
+        encoder_source = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims_source + (latent_dim, ), bottleneck=False)
+        encoder_target = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims_target + (latent_dim, ), bottleneck=False)
         net_def = CrossDomainAlign(
             source_encoder=encoder_source,
             target_encoder=encoder_target,
             ema_encoder_source=copy.deepcopy(encoder_source),
-            ema_encoder_target=copy.deepcopy(encoder_source),
+            ema_encoder_target=copy.deepcopy(encoder_target),
             not_estimator=not_agent
         )
         params = net_def.init(key1, source_obs, target_obs)['params']
         net = TrainState.create(
             model_def=net_def,
             params=params,
-            tx=optax.multi_transform({'source_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=2e-4)),
-                                      'target_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=2e-4)),
+            tx=optax.multi_transform({'source_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
+                                      'target_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
                                       "zero": optax.set_to_zero()},
                                       param_labels={'source_encoder': "source_encoder", 'target_encoder': 'target_encoder',
                                                     'ema_encoder_source': 'zero', 'ema_encoder_target': 'zero'}
@@ -276,7 +279,7 @@ class JointNOTAgent(PyTreeNode):
         params['ema_encoder_source'] = net.params['source_encoder']
         params['ema_encoder_target'] = net.params['target_encoder']
         net = net.replace(params=params)
-        return cls(rng=rng, net=net)
+        return cls(rng=rng, net=net, dual_potentials=dual_potentials)
     
     @functools.partial(jax.jit, static_argnames=('update_not'))
     def update(self, source_batch, target_batch, update_not: bool):
@@ -290,7 +293,8 @@ class JointNOTAgent(PyTreeNode):
             target_enc_loss, target_enc_info = compute_target_encoder_loss(self.net, params, target_batch)
             for k, v in target_enc_info.items():
                 info[f'target_enc/{k}'] = v
-            not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, params, source_batch, target_batch)
+                
+            not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, self.dual_potentials, params, source_batch, target_batch)
             loss = source_enc_loss + target_enc_loss + not_loss
             return loss, info
         
@@ -304,7 +308,7 @@ class JointNOTAgent(PyTreeNode):
         new_net = net.replace(params=params)
         
         return self.replace(net=new_net), info
-        
+    
 icvfs = {
     'encodervf': JointNOTAgent,
     'multilinear': MultilinearVF,

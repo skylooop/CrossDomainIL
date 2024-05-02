@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import jax
 
 from ott.neural.methods.neuraldual import W2NeuralDual
+import functools
 
 ###############################
 #
@@ -103,10 +104,6 @@ class CrossDomainAlign(nn.Module):
     def encode_target_ema(self, obs: jnp.ndarray):
         return self.ema_encoder_target(obs)
     
-    # def get_potentials(self):
-    #     potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
-    #     return potentials.f, potentials.g
-    
     def get_potentials(self):
         potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
         return potentials
@@ -119,7 +116,8 @@ class CrossDomainAlign(nn.Module):
         encoded_source = self.encode_source(batch_source.observations)
         encoded_target = self.encode_target(batch_target.observations)
         _, loss, w_dist = self.not_estimator.neural_dual_elements.update(encoded_source, encoded_target)
-        return encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
+        potentials = self.get_potentials()
+        return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
     
     @nn.compact # for init only
     def __call__(self, source_obs: jnp.ndarray, target_obs: jnp.ndarray) -> Dict[str, np.ndarray]:
