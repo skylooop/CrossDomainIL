@@ -104,11 +104,11 @@ class CrossDomainAlign(nn.Module):
         return self.ema_encoder_target(obs)
     
     def get_potentials(self):
-        potentials = self.not_estimator.neural_dual_elements.to_dual_potentials()
+        potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
         return potentials.f, potentials.g
     
     def get_not_distance(self, encoded_source, encoded_target):
-        potentials = self.not_estimator.neural_dual_elements.to_dual_potentials()
+        potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
         return potentials.distance(encoded_source, encoded_target)
     
     def update_not(self, batch_source, batch_target):

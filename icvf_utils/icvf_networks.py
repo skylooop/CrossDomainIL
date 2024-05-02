@@ -241,9 +241,9 @@ class JointNOTAgent(PyTreeNode):
         seed: int,
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
-        latent_dim: int = 8,
+        latent_dim: int = 4,
         not_agent: Any = None,
-        hidden_dims: Sequence[int] = (16, 16, 16)# (32, 32, 32) - works good
+        hidden_dims: Sequence[int] = (16, 16, 16, 16)# (32, 32, 32) - works good
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1 = jax.random.split(rng, 2)
@@ -254,8 +254,8 @@ class JointNOTAgent(PyTreeNode):
         # ))
         #encoder_source = MLP(hidden_dims=hidden_dims, activate_final=True, activations=jax.nn.gelu)
         
-        encoder_source = RelativeRepresentation(layer_norm=True, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
-        encoder_target = RelativeRepresentation(layer_norm=True, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
+        encoder_source = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
+        encoder_target = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims + (latent_dim, ), bottleneck=False)
         net_def = CrossDomainAlign(
             source_encoder=encoder_source,
             target_encoder=encoder_target,

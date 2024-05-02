@@ -79,15 +79,12 @@ def supply_rng(f, rng=jax.random.PRNGKey(0)):
 
     return wrapped
 
-@functools.partial(jax.jit, static_argnums=(1))
-def compute_reward_from_not(encoders, f_potential, f_params, agent_observations, agent_next_observations):
-    # sa = agent_observations[:2]
-    # sa_next = agent_next_observations[:2]
-    # sa = encoders(agent_observations, method='encode_agent')
-    # sa_next = encoders(agent_next_observations, method='encode_agent')
-    agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
-    reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs)# ** 2
-    return reward
+@jax.jit
+def compute_reward_from_not(agent, obs):
+    pass
+    ####
+    #reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs)# ** 2
+    #return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
 def collect_expert(cfg: DictConfig) -> None:
@@ -180,19 +177,19 @@ def collect_expert(cfg: DictConfig) -> None:
         neural_f = ott.neural.networks.potentials.PotentialMLP(
             dim_hidden=[64, 64, 64, 64],
             is_potential=True,
-            act_fn=jax.nn.gelu
+            act_fn=jax.nn.leaky_relu
         )
         neural_g = ott.neural.networks.potentials.PotentialMLP(
             dim_hidden=[64, 64, 64, 64],
             is_potential=True,
-            act_fn=jax.nn.gelu
+            act_fn=jax.nn.leaky_relu
         )
         
-        optimizer_f = optax.adamw(learning_rate=2e-4, b1=0.9, b2=0.999)
-        optimizer_g = optax.adamw(learning_rate=2e-4, b1=0.9, b2=0.999)
+        optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.999)
+        optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.999)
 
         not_agent = NotAgent(
-            embed_dim=8,
+            embed_dim=4,
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
@@ -202,7 +199,7 @@ def collect_expert(cfg: DictConfig) -> None:
         
         joint_ot_agent = JointNOTAgent.create(
             cfg.seed,
-            latent_dim=8,
+            latent_dim=4,
             not_agent=not_agent,
             target_obs=target_random_buffer.observations[0],
             source_obs=combined_source_ds.observations[0],
@@ -212,21 +209,29 @@ def collect_expert(cfg: DictConfig) -> None:
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     os.makedirs("viz_plots", exist_ok=True)
-    for i in tqdm(range(300_000), leave=True):
+    for i in tqdm(range(200_001), leave=True):
         target_data = target_random_buffer.sample(512, icvf=True)
         source_data = combined_source_ds.sample(512, icvf=True)
-        if i % 2_000 == 0:
+        if i % 10 == 0:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=True)
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=False)
         
-        if i % 10_000 == 0:
-            for i in tqdm(range(1), desc="Updating NOT", position=1, leave=False):
+        if i % 5_000 == 0:
+            for i in tqdm(range(500), desc="Updating NOT", position=1, leave=False):
                 target_data = target_random_buffer.sample(1024, icvf=True)
                 source_data = combined_source_ds.sample(1024, icvf=True)
                 encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
-            
-        if i % 10_000 == 1:
+        
+        if i % 100_000 == 1:
+            ckptr = PyTreeCheckpointer()
+            ckptr.save(
+                os.getcwd() + "/saved_encoding_agent",
+                joint_ot_agent,
+                force=True,
+                save_args=orbax_utils.save_args_from_target(joint_ot_agent),
+            )
+        if i % 4_000 == 0:
             # Target domain
             pca = PCA(n_components=2)
             tsne = TSNE(n_components=2, perplexity=50, n_iter=1000)
@@ -259,7 +264,7 @@ def collect_expert(cfg: DictConfig) -> None:
             neural_dual_dist = joint_ot_agent.net(encoded_source, encoded_target, method='get_not_distance')
             sinkhorn_dist = sinkhorn_loss(encoded_source, encoded_target)
             
-            print(f"Neural dual distance between source and target data: {neural_dual_dist:.2f}")
+            print(f"\nNeural dual distance between source and target data: {neural_dual_dist:.2f}")
             print(f"Sinkhorn distance between source and target data: {sinkhorn_dist:.2f}")
             
     ckptr = PyTreeCheckpointer()
@@ -269,7 +274,6 @@ def collect_expert(cfg: DictConfig) -> None:
         force=True,
         save_args=orbax_utils.save_args_from_target(joint_ot_agent),
     )
-    
     # Stage 1. Pretrain Encoders
     ###
     # os.makedirs("viz_plots", exist_ok=True)
@@ -328,7 +332,6 @@ def collect_expert(cfg: DictConfig) -> None:
     #     save_args=orbax_utils.save_args_from_target(icvf_enc_source),
     # )
     # exit()
-    exit()
     
     # # Stage 2. PRETRAIN Neural OT
     # pbar = tqdm(range(5_000), leave=True)
@@ -361,8 +364,7 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.
-        reward = compute_reward_from_not(not_agent.encoders_state, not_agent.neural_dual_pairs.state_f.potential_value_fn,
-                                         not_agent.neural_dual_pairs.state_f.params, observation, next_observation)
+        reward = compute_reward_from_not()
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -379,28 +381,10 @@ def collect_expert(cfg: DictConfig) -> None:
         
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                agent_data = target_random_buffer.sample(256) # Maybe add prioritization?
-                expert_data = source_expert_ds.sample(1024)
-                random_data = source_random_ds.sample(256)
-                loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
-                #if i % 500 == 0:
-                    # if i % 10_000 == 0:
-                    #     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
-                if i % 10_000 == 0:
-                    pbar.set_postfix(info)
-                    # se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-                    # sn = not_agent.encoders_state(random_data.observations, method='encode_expert')
-                    #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
-                    sa = agent_data.observations[:, :2]
-                    se = expert_data.observations[:, :2]
-                    sn = random_data.observations[:, :2]
-                    
-                    sink = sinkhorn_loss(sa, se)
-                    print({"sink_dist": sink.item(),
-                            "w_dist_elem": w_dist_elem.item()})
-                    os.makedirs("plots", exist_ok=True)
-                    plot_embeddings(sn, se, sa)
-                actor_update_info = agent.update(agent_data)
+                target_data = target_random_buffer.sample(256)
+                source_data = combined_source_ds.sample(256)
+                #loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+                actor_update_info = agent.update(target_data)
 
         if i % cfg.log_interval == 0:
             wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],
