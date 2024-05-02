@@ -103,9 +103,13 @@ class CrossDomainAlign(nn.Module):
     def encode_target_ema(self, obs: jnp.ndarray):
         return self.ema_encoder_target(obs)
     
+    # def get_potentials(self):
+    #     potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
+    #     return potentials.f, potentials.g
+    
     def get_potentials(self):
         potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
-        return potentials.f, potentials.g
+        return potentials
     
     def get_not_distance(self, encoded_source, encoded_target):
         potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)

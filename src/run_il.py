@@ -208,16 +208,21 @@ def collect_expert(cfg: DictConfig) -> None:
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
+    for i in tqdm(range(5_000), desc="Pretraining NOT", position=1, leave=False):
+        target_data = target_random_buffer.sample(1024, icvf=True)
+        source_data = combined_source_ds.sample(1024, icvf=True)
+        encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
+
     os.makedirs("viz_plots", exist_ok=True)
     for i in tqdm(range(200_001), leave=True):
         target_data = target_random_buffer.sample(512, icvf=True)
         source_data = combined_source_ds.sample(512, icvf=True)
-        if i % 10 == 0:
+        if i % 30 == 0:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=True)
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=False)
         
-        if i % 5_000 == 0:
+        if i % 10_000 == 0:
             for i in tqdm(range(500), desc="Updating NOT", position=1, leave=False):
                 target_data = target_random_buffer.sample(1024, icvf=True)
                 source_data = combined_source_ds.sample(1024, icvf=True)

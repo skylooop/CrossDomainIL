@@ -227,8 +227,8 @@ def compute_target_encoder_loss(net, params, batch):
 def compute_not_distance(network, params, source_batch, target_batch): 
     encoded_source = network(source_batch.observations, params=params, method='encode_source')   
     encoded_target = network(target_batch.observations, params=params, method='encode_target')
-    f, g = network(method='get_potentials')
-    loss = -(jax.vmap(f)(encoded_source) + jax.vmap(g)(encoded_target)).mean()
+    potentials = network(method='get_potentials')
+    loss = -(jax.vmap(potentials.f)(encoded_source) + jax.vmap(potentials.g)(encoded_target)).mean()
     return loss
 
 class JointNOTAgent(PyTreeNode):
@@ -278,7 +278,7 @@ class JointNOTAgent(PyTreeNode):
         net = net.replace(params=params)
         return cls(rng=rng, net=net)
     
-    @jax.jit
+    @functools.partial(jax.jit, static_argnames=('update_not'))
     def update(self, source_batch, target_batch, update_not: bool):
         def loss_fn(params):
             info = {}
@@ -290,9 +290,7 @@ class JointNOTAgent(PyTreeNode):
             target_enc_loss, target_enc_info = compute_target_encoder_loss(self.net, params, target_batch)
             for k, v in target_enc_info.items():
                 info[f'target_enc/{k}'] = v
-                
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, params, source_batch, target_batch)
-            
             loss = source_enc_loss + target_enc_loss + not_loss
             return loss, info
         
