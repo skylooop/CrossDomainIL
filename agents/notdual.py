@@ -1,4 +1,4 @@
-from ott.neural.solvers.neuraldual import W2NeuralDual
+from ott.neural.methods.neuraldual import W2NeuralDual
 import jax.numpy as jnp
 import jax
 import numpy as np
@@ -7,7 +7,8 @@ from typing import Dict
 import optax
 from networks.common import TrainState
 
-from ott.neural.solvers.conjugate import FenchelConjugateLBFGS
+from ott.neural.networks.layers.conjugate import FenchelConjugateLBFGS
+
 
 DEFAULT_CONJUGATE_SOLVER = FenchelConjugateLBFGS(
     gtol=1e-5,
