@@ -21,6 +21,10 @@ import jax.numpy as jnp
 import distrax
 import flax.linen as nn
 import jax.numpy as jnp
+import jax
+
+from ott.neural.methods.neuraldual import W2NeuralDual
+import functools
 
 ###############################
 #
@@ -32,13 +36,102 @@ import jax.numpy as jnp
 def default_init(scale: Optional[float] = 1.0):
     return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
 
-class CrossDomainAlign(nn.Module):
-    encoder: Type[nn.Module]
-    
-    @nn.compact
-    def __call__(self, obs: jnp.ndarray) -> Dict[str, np.ndarray]:
-        return self.encoder(obs)
+class LayerNormMLP(nn.Module):
+    hidden_dims: Sequence[int]
+    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.gelu
+    activate_final: bool = False
+    kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = default_init()
 
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        for i, size in enumerate(self.hidden_dims):
+            x = nn.Dense(size, kernel_init=self.kernel_init)(x)
+            if i + 1 < len(self.hidden_dims) or self.activate_final:                
+                x = self.activations(x)
+                x = nn.LayerNorm()(x)
+        return x
+    
+class RelativeRepresentation(nn.Module):
+    rep_dim: int = 256
+    hidden_dims: tuple = (256, 256)
+    module: nn.Module = None
+    visual: bool = False
+    layer_norm: bool = False
+    rep_type: str = 'state'
+    bottleneck: bool = True  # Meaning that we're using this representation for high-level actions
+
+    @nn.compact
+    def __call__(self, targets, bases=None):
+        if bases is None:
+            inputs = targets
+        else:
+            if self.rep_type == 'state':
+                inputs = targets
+            elif self.rep_type == 'diff':
+                inputs = jax.tree_map(lambda t, b: t - b + jnp.ones_like(t) * 1e-6, targets, bases)
+            elif self.rep_type == 'concat':
+                inputs = jax.tree_map(lambda t, b: jnp.concatenate([t, b], axis=-1), targets, bases)
+            else:
+                raise NotImplementedError
+
+        if self.visual:
+            inputs = self.module()(inputs)
+        if self.layer_norm:
+            rep = LayerNormMLP(self.hidden_dims, activate_final=not self.bottleneck, activations=nn.leaky_relu)(inputs)
+        else:
+            rep = MLP(self.hidden_dims, activate_final=not self.bottleneck, activations=nn.leaky_relu)(inputs)
+
+        if self.bottleneck:
+            rep = rep / jnp.linalg.norm(rep, axis=-1, keepdims=True) * jnp.sqrt(self.rep_dim)
+        return rep
+
+class CrossDomainAlign(nn.Module):
+    source_encoder: Type[nn.Module]
+    target_encoder: Type[nn.Module]
+    ema_encoder_source: Type[nn.Module]
+    ema_encoder_target: Type[nn.Module]
+    #not_estimator: Type[W2NeuralDual]
+    
+    def encode_source(self, obs: jnp.ndarray):
+        return self.source_encoder(obs)
+
+    def encode_target(self, obs: jnp.ndarray):
+        return self.target_encoder(obs)
+    
+    def encode_source_ema(self, obs: jnp.ndarray):
+        return self.ema_encoder_source(obs)
+    
+    def encode_target_ema(self, obs: jnp.ndarray):
+        return self.ema_encoder_target(obs)
+    
+    # def get_potentials(self):
+    #     potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
+    #     return potentials
+    
+    # def get_not_distance(self, encoded_source, encoded_target):
+    #     potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
+    #     return potentials.distance(encoded_source, encoded_target)
+    
+    # def update_not(self, batch_source, batch_target):
+    #     encoded_source = self.encode_source(batch_source.observations)
+    #     encoded_target = self.encode_target(batch_target.observations)
+    #     _, loss, w_dist = self.not_estimator.neural_dual_elements.update(encoded_source, encoded_target)
+    #     potentials = self.get_potentials()
+    #     return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
+    
+    # def update_neuraldual(self, batch_source, batch_target):
+    #     _, loss, w_dist = self.not_estimator.neural_dual_elements.update(batch_source, batch_target)
+    #     return loss, w_dist
+        
+    @nn.compact # for init only
+    def __call__(self, source_obs: jnp.ndarray, target_obs: jnp.ndarray) -> Dict[str, np.ndarray]:
+        return {
+            'source_encoder': self.encode_source(source_obs),
+            'target_encoder': self.encode_target(target_obs),
+            'ema_encoder_source': self.encode_source_ema(source_obs),
+            'ema_encoder_target': self.encode_target_ema(target_obs),
+        }
+    
 class MLPResNetBlock(nn.Module):
     features: int
     act: Callable

@@ -6,14 +6,15 @@ import flax.linen as nn
 from typing import Dict
 import optax
 from networks.common import TrainState
-
+import jax.tree_util as jtu
+from ott.problems.linear import potentials as dual_potentials
 from ott.neural.networks.layers.conjugate import FenchelConjugateLBFGS
 
 
 DEFAULT_CONJUGATE_SOLVER = FenchelConjugateLBFGS(
     gtol=1e-5,
-    max_iter=70,
-    max_linesearch_iter=30,
+    max_iter=30,
+    max_linesearch_iter=20,
     linesearch_type="backtracking",
 )
 
@@ -33,28 +34,71 @@ class Encoders(nn.Module):
         }
         return rets
     
+@jtu.register_pytree_node_class
+class PotentialsCustom:
+
+    def __init__(
+      self, state_f, state_g, conjugate_solver
+    ):
+        
+        self.state_f = state_f
+        self.state_g = state_g
+        self.conjugate_solver = conjugate_solver
+
+    def tree_flatten(self):
+        return [self.state_f, self.state_g], {
+            "conjugate_solver": self.conjugate_solver
+        }
+
+    @classmethod
+    def tree_unflatten(  # noqa: D102
+        cls, aux_data, children
+    ):
+        return cls(*children, **aux_data)
+
+    def get_fg(self):
+    
+        f_value = self.state_f.potential_value_fn(self.state_f.params)
+        g_value_prediction = self.state_g.potential_value_fn(
+            self.state_g.params, f_value
+        )
+
+        def g_value_finetuned(y: jnp.ndarray) -> jnp.ndarray:
+            x_hat = jax.grad(g_value_prediction)(y)
+            grad_g_y = jax.lax.stop_gradient(
+                self.conjugate_solver.solve(f_value, y, x_init=x_hat).grad
+            )
+            return -f_value(grad_g_y) + jnp.dot(grad_g_y, y)
+        
+        return f_value, g_value_finetuned
+    
+    def distance(self, x, y):
+        f, g = self.get_fg()
+        return -(jax.vmap(f)(x) + jax.vmap(g)(y)).mean()
+
+
 class W2NeuralDualCustom(W2NeuralDual):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.back_and_forth = True
         self.step = 0
     
-    def update(self, batch_agent, batch_expert):
+    def update(self, batch_source, batch_target):
 
         update_forward = not self.back_and_forth or self.step % 2 == 0
         train_batch = {}
 
         if update_forward:
-            train_batch["source"] = batch_agent
-            train_batch["target"] = batch_expert
+            train_batch["source"] = batch_source
+            train_batch["target"] = batch_target
             (self.state_f, self.state_g, loss, loss_f, loss_g, w_dist) = self.train_step_parallel(
                 self.state_f,
                 self.state_g,
                 train_batch,
             )
         else:
-            train_batch["target"] = batch_agent
-            train_batch["source"] = batch_expert
+            train_batch["target"] = batch_source
+            train_batch["source"] = batch_target
             (self.state_g, self.state_f, loss, loss_f, loss_g, w_dist) = self.train_step_parallel(
                 self.state_g,
                 self.state_f,
@@ -65,65 +109,31 @@ class W2NeuralDualCustom(W2NeuralDual):
        
         return self, loss, w_dist
     
-@jax.jit
-def compute_embeds(encoders, batch_agent, batch_expert, random_data):
-    se = batch_expert.observations[:, :2]
-    se_next = batch_expert.next_observations[:, :2]
-    sn = random_data.observations[:, :2]
-    sn_next = random_data.next_observations[:, :2]
-    sa = batch_agent.observations[:, :2]
-    sa_next = batch_agent.next_observations[:, :2]
-    # se = encoders(batch_expert.observations, method='encode_expert')
-    # se_next = encoders(batch_expert.next_observations, method='encode_expert')
-    # sn = encoders(random_data.observations, method='encode_expert')
-    # sn_next = encoders(random_data.next_observations, method='encode_expert')
-    # sa = encoders(batch_agent.observations, method='encode_agent')
-    # sa_next = encoders(batch_agent.next_observations, method='encode_agent')
-
-    sa_pairs = jnp.concatenate([sa, sa_next], axis=-1)
-    se_pairs = jnp.concatenate([se, se_next], axis=-1)
-    sn_pairs = jnp.concatenate([sn, sn_next], axis=-1)
-
-    return  sa, se, sn, sa_pairs, se_pairs, sn_pairs
+    def to_dual_potentials(
+      self, finetune_g: bool = True
+    ) -> PotentialsCustom:
+        
+       return PotentialsCustom(self.state_f, self.state_g, self.conjugate_solver)
+    
       
-class JointAgent:
+class NotAgent:
     def __init__(
         self,
-        icvf_enc,
-        agent_dim: int,
-        expert_dim: int,
         embed_dim: int,
         neural_f: nn.Module,
         neural_g: nn.Module,
         optimizer_f,
         optimizer_g,
         expert_loss_coef: float = 1.0,
-        learning_rate: float = 1e-4,
-        num_train_iters: int = 10_000,
-        rng = jax.random.PRNGKey(42)) -> None:
+        num_train_iters: int = 10_000):
 
         self.expert_loss_coef = expert_loss_coef
-
-        # encoders = Encoders({
-        #     'agent_encoder': encoder_agent,
-        #     'expert_encoder': encoder_expert
-        # })
-
-        # self.encoders_state = TrainState.create(
-        #     model_def=encoders,
-        #     params=encoders.init(rng, jnp.ones(agent_dim), jnp.ones(expert_dim))['params'],
-        #     tx=optax.adam(learning_rate=learning_rate)
-        # )
-        self.encoders_vf = icvf_enc
-
         self.neural_dual_elements = W2NeuralDualCustom(
             dim_data=embed_dim, 
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            #conjugate_solver=DEFAULT_CONJUGATE_SOLVER,
-            #num_inner_iters=100,
             num_train_iters=num_train_iters # 20_000
         )
 
@@ -132,8 +142,6 @@ class JointAgent:
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
-            #conjugate_solver=DEFAULT_CONJUGATE_SOLVER, 
-            #num_inner_iters=100,
             optimizer_g=optimizer_g,
             num_train_iters=num_train_iters # 20_000
         )
@@ -149,13 +157,7 @@ class JointAgent:
         sa_next = jnp.concatenate([sa, sa_next], axis=-1)
         
         return learned_potentials.distance(jnp.concatenate([sa_next, x_pair]), jnp.concatenate([y_pair, y_pair]))
-    
-    @staticmethod
-    def compute_expert_encoder_loss(learned_potentials, y, y_next): # maximize target potential g w.r.t encoder
-        y_pair = jnp.concatenate([y, y_next], axis=-1)
-        g_value = jax.vmap(learned_potentials.g)(y_pair)
-        return jnp.mean((y_pair ** 2).sum(-1)) - 2 * jnp.mean(g_value)
-    
+      
     #@staticmethod
     # def encoders_loss(potentials_elem, potentials_pairs, sa, se, sn, sa_next, se_next, sn_next, expert_loss_coef):
         
@@ -172,12 +174,13 @@ class JointAgent:
 
     #     return loss, loss_elem, loss_pairs
 
-    def optimize_not(self, batch_agent, batch_expert, random_data):
-        sa, se, sn, sa_pairs, se_pairs, sn_pairs = compute_embeds(self.encoders_state, batch_agent, batch_expert, random_data)
-        _, loss_elem, w_dist_elem = self.neural_dual_elements.update(np.concatenate([sa, sn]), np.concatenate([se, se]))
-        _, loss_pairs, w_dist_pairs = self.neural_dual_pairs.update(np.concatenate([sa_pairs, sn_pairs]), np.concatenate([se_pairs, se_pairs]))
+    # PRETRAIN STAGE
+    # def optimize_not(self, batch_agent, batch_expert, random_data):
+    #     #sa, se, sn, sa_pairs, se_pairs, sn_pairs = compute_embeds(self.encoders_state, batch_agent, batch_expert, random_data)
+    #     _, loss_elem, w_dist_elem = self.neural_dual_elements.update(np.concatenate([sa, sn]), np.concatenate([se, se]))
+    #     _, loss_pairs, w_dist_pairs = self.neural_dual_pairs.update(np.concatenate([sa_pairs, sn_pairs]), np.concatenate([se_pairs, se_pairs]))
         
-        return loss_elem, loss_pairs, w_dist_elem, w_dist_pairs
+    #     return loss_elem, loss_pairs, w_dist_elem, w_dist_pairs
     
     def optimize_encoders(self, batch_agent, batch_expert, random_data):
         @jax.jit
@@ -197,7 +200,7 @@ class JointAgent:
                 # sn = encoders(random_data.observations, method='encode_expert')
                 # sn_next = encoders(random_data.next_observations, method='encode_expert')
 
-                loss, not_loss, expert_enc_loss = JointAgent.encoders_loss(potentials_elem, potentials_pairs, sa, se, sn, sa_next, se_next, sn_next, self.expert_loss_coef)
+                loss, not_loss, expert_enc_loss = NotAgent.encoders_loss(potentials_elem, potentials_pairs, sa, se, sn, sa_next, se_next, sn_next, self.expert_loss_coef)
 
                 return loss, {'loss': loss,
                             'not_distance': not_loss,

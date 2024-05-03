@@ -18,25 +18,26 @@ import random
 from orbax.checkpoint import PyTreeCheckpointer
 from flax.training import orbax_utils
 import optax
-from ott.neural import models
 
 import matplotlib.pyplot as plt
 import wandb
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
 import functools
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
-from agents.notdual import JointAgent
-from networks.common import LayerNormMLP
-from icvf_utils.icvf_networks import EncoderVF
-from jaxrl_m.common import TrainState
+from agents.notdual import NotAgent
+from icvf_utils.icvf_networks import JointNOTAgent
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.record_video import RecordVideo
 
+import ott
+from agents.notdual import W2NeuralDualCustom
 
 @functools.partial(jax.jit, static_argnums=2)
 def sinkhorn_loss(
@@ -62,15 +63,29 @@ def plot_embeddings(sn, se, tn) -> None:
     wandb.log({'Embeddings': wandb.Image(fig)})
     plt.close()
 
-@functools.partial(jax.jit, static_argnums=(1))
-def compute_reward_from_not(encoders, f_potential, f_params, agent_observations, agent_next_observations):
-    # sa = agent_observations[:2]
-    # sa_next = agent_next_observations[:2]
-    # sa = encoders(agent_observations, method='encode_agent')
-    # sa_next = encoders(agent_next_observations, method='encode_agent')
-    agent_pairs = jnp.concatenate([sa, sa_next], axis=-1)
-    reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs)# ** 2
-    return reward
+def supply_rng(f, rng=jax.random.PRNGKey(0)):
+    """
+    Wrapper that supplies a jax random key to a function (using keyword `seed`).
+    Useful for stochastic policies that require randomness.
+
+    Similar to functools.partial(f, seed=seed), but makes sure to use a different
+    key for each new call (to avoid stale rng keys).
+
+    """
+
+    def wrapped(*args, **kwargs):
+        nonlocal rng
+        rng, key = jax.random.split(rng)
+        return f(*args, seed=key, **kwargs)
+
+    return wrapped
+
+@jax.jit
+def compute_reward_from_not(agent, obs):
+    pass
+    ####
+    #reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs)# ** 2
+    #return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
 def collect_expert(cfg: DictConfig) -> None:
@@ -156,84 +171,208 @@ def collect_expert(cfg: DictConfig) -> None:
     #     restored_ckpt = checkpointer.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-04-21/15-07-38/saved_model")
     #     value_def = create_icvf("multilinear", hidden_dims=[512, 512, 512], ensemble=True)
     #     icvf_value = TrainState.create(value_def, params=restored_ckpt['value']['params'])
-    
-    # Whether to train encoder based on ICVF -> Then use as frozen or extract
-    # trained enc params and init new for further training
-    if cfg.encoders_icvf:
+
+    if cfg.optimal_transport:
         from datasets.gc_dataset import GCSDataset
         
-        icvf_enc = EncoderVF.create(
-            cfg.seed,
-            #target_random_buffer.observations[0]
-            #source_random_ds.observations[0]
-            combined_source_ds.observations[0]
+        neural_f = ott.neural.networks.potentials.PotentialMLP(
+            dim_hidden=[64, 64, 64],
+            is_potential=True,
+            act_fn=jax.nn.gelu
         )
-        gc_icvf_dataset_target = GCSDataset(dataset=combined_source_ds, #target_random_buffer, 
-                                            **GCSDataset.get_default_config())
+        neural_g = ott.neural.networks.potentials.PotentialMLP(
+            dim_hidden=[64, 64, 64],
+            is_potential=True,
+            act_fn=jax.nn.gelu
+        )
         
-    neural_f = models.MLP(
-        dim_hidden=[128, 128, 128, 128],
-        is_potential=True,
-        act_fn=jax.nn.leaky_relu
-    )
-    neural_g = models.MLP(
-        dim_hidden=[128, 128, 128, 128],
-        is_potential=True,
-        act_fn=jax.nn.leaky_relu
-    )
-    
-    optimizer_f = optax.adam(learning_rate=1e-4, b1=0.5, b2=0.99)
-    optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.99)
+        optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.9)
+        optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.9)
 
-    not_agent = JointAgent(
-        icvf_enc=icvf_enc,
-        embed_dim=2,
-        # encoder_agent, 
-        # encoder_expert, 
-        agent_dim=eval_env.observation_space.shape[0],
-        expert_dim=source_expert_ds.observations.shape[-1],
-        neural_f=neural_f,
-        neural_g=neural_g,
-        optimizer_f=optimizer_f,
-        optimizer_g=optimizer_g,
-        num_train_iters=10_000,
-        expert_loss_coef=1.)
+        # not_agent = NotAgent(
+        #     embed_dim=4,
+        #     neural_f=neural_f,
+        #     neural_g=neural_g,
+        #     optimizer_f=optimizer_f,
+        #     optimizer_g=optimizer_g,
+        #     num_train_iters=10_000,
+        #     expert_loss_coef=1.)
+        
+        not_agent = W2NeuralDualCustom(
+            dim_data=4, 
+            neural_f=neural_f,
+            neural_g=neural_g,
+            optimizer_f=optimizer_f,
+            optimizer_g=optimizer_g,
+            num_train_iters=10_000 # 20_000
+        )
+        
+        joint_ot_agent = JointNOTAgent.create(
+            cfg.seed,
+            latent_dim=4,
+            not_agent=not_agent,
+            target_obs=target_random_buffer.observations[0],
+            source_obs=combined_source_ds.observations[0],
+            dual_potentials=None
+        )
+        #gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, **GCSDataset.get_default_config())
     
     (observation, info), done = env.reset(seed=cfg.seed), False
+    potentials = None
+
+    def update_not(batch_source, batch_target):
+        encoded_source, encoded_target = JointNOTAgent.encode(joint_ot_agent.net, batch_source, batch_target)
+        new_not_agent, loss, w_dist = not_agent.update(encoded_source, encoded_target)
+        potentials = new_not_agent.to_dual_potentials(finetune_g=True)
+        return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
     
-    # Stage 1. Pretrain Encoders
-    ###
-    pbar = tqdm(range(75_000), leave=True)
-    for i in pbar:
-        #agent_data = gc_icvf_dataset_target.sample(512)
-        agent_data = combined_source_ds.sample(512, icvf=True) #target_random_buffer
-        icvf_enc, info = icvf_enc.update(agent_data)
+    for i in tqdm(range(2000), desc="Pretraining NOT", position=1, leave=False):
+        target_data = target_random_buffer.sample(1024, icvf=True)
+        source_data = combined_source_ds.sample(1024, icvf=True)
+        potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+
+    os.makedirs("viz_plots", exist_ok=True)
+    for i in tqdm(range(200_001), leave=True):
+        target_data = target_random_buffer.sample(512, icvf=True)
+        source_data = combined_source_ds.sample(512, icvf=True)
+        if i % 10 == 0:
+            joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=True)
+        else:
+            joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=False)
         
+        if i % 10 == 0:
+            target_data = target_random_buffer.sample(1024, icvf=True)
+            source_data = combined_source_ds.sample(1024, icvf=True)
+            potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+
+        if i % 100_000 == 1:
+            ckptr = PyTreeCheckpointer()
+            ckptr.save(
+                os.getcwd() + "/saved_encoding_agent",
+                joint_ot_agent,
+                force=True,
+                save_args=orbax_utils.save_args_from_target(joint_ot_agent),
+            )
+        if i % 2010 == 0:
+            # Target domain
+            pca = PCA(n_components=2)
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+            encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
+            fitted_pca = pca.fit_transform(encoded_target)
+            fitted_tsne = tsne.fit_transform(encoded_target)
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+            fig.savefig(f"viz_plots/target_{i}_pca.png")
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+            fig.savefig(f"viz_plots/target_{i}_tsne.png")
+            
+            #####################################################################################
+            # Source domain
+            pca = PCA(n_components=2)
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+            encoded_source = joint_ot_agent.net(source_data.observations, method='encode_source')
+            fitted_pca = pca.fit_transform(encoded_source)
+            fitted_tsne = tsne.fit_transform(encoded_source)
+
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+            fig.savefig(f"viz_plots/source_{i}_pca.png")
+
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+            fig.savefig(f"viz_plots/source_{i}_tsne.png")
+            
+            neural_dual_dist = potentials.distance(encoded_source, encoded_target) #joint_ot_agent.net(encoded_source, encoded_target, method='get_not_distance')
+            sinkhorn_dist = sinkhorn_loss(encoded_source, encoded_target)
+            
+            print(f"\nNeural dual distance between source and target data: {neural_dual_dist:.5f}")
+            print(f"Sinkhorn distance between source and target data: {sinkhorn_dist:.5f}")
+            
     ckptr = PyTreeCheckpointer()
     ckptr.save(
-        os.getcwd() + "/saved_encoder",
-        icvf_enc,
+        os.getcwd() + "/saved_encoding_agent",
+        joint_ot_agent,
         force=True,
-        save_args=orbax_utils.save_args_from_target(icvf_enc),
+        save_args=orbax_utils.save_args_from_target(joint_ot_agent),
     )
     exit()
-    # Stage 2. PRETRAIN Neural OT
-    pbar = tqdm(range(5_000), leave=True)
-    for i in pbar:
-        agent_data = target_random_buffer.sample(1024)
-        expert_data = source_expert_ds.sample(1024)
-        random_data = source_random_ds.sample(1024)
-        loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+    # Stage 1. Pretrain Encoders
+    ###
+    # os.makedirs("viz_plots", exist_ok=True)
+    # for i in tqdm(range(250_000), leave=True):
+    #     agent_data = target_random_buffer.sample(256, icvf=True)
+    #     icvf_enc_target, info = icvf_enc_target.update(agent_data)
+        
+    #     if i % 50_000 == 1:
+            
+    #         pca = PCA(n_components=2)
+    #         tsne = TSNE(n_components=2, perplexity=30, n_iter=1000)
+            
+    #         fitted_pca = pca.fit_transform(icvf_enc_target.net(agent_data.observations[:]))
+    #         fitted_tsne = tsne.fit_transform(icvf_enc_target.net(agent_data.observations[:]))
 
-        if i % 100 == 0:
-            #se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-            #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
-            sink = sinkhorn_loss(sa, se)
-            info = {"sink_dist": sink,
-                          "w_dist_elem": w_dist_elem,
-                          "w_dist_pairs": w_dist_pairs}
-            pbar.set_postfix(info)
-            wandb.log(info)
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+    #         fig.savefig(f"viz_plots/target_{i}_pca.png")
+
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+    #         fig.savefig(f"viz_plots/target_{i}_tsne.png")
+        
+    # ckptr = PyTreeCheckpointer()
+    # ckptr.save(
+    #     os.getcwd() + "/saved_encoder_target",
+    #     icvf_enc_target,
+    #     force=True,
+    #     save_args=orbax_utils.save_args_from_target(icvf_enc_target),
+    # )
+    # print("Finished Training Target Domain Encoder")
+    
+    # for i in tqdm(range(250_000), leave=True):
+    #     agent_data = combined_source_ds.sample(256, icvf=True)
+    #     icvf_enc_source, info = icvf_enc_source.update(agent_data)
+        
+    #     if i % 50_000 == 1:
+    #         pca = PCA(n_components=2)
+    #         tsne = TSNE(n_components=2, perplexity=30, n_iter=1000)
+            
+    #         fitted_pca = pca.fit_transform(icvf_enc_source.net(agent_data.observations[:]))
+    #         fitted_tsne = tsne.fit_transform(icvf_enc_source.net(agent_data.observations[:]))
+
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+    #         fig.savefig(f"viz_plots/source_{i}_pca.png")
+
+    #         fig, ax = plt.subplots()
+    #         ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+    #         fig.savefig(f"viz_plots/source_{i}_tsne.png")
+    # ckptr = PyTreeCheckpointer()
+    # ckptr.save(
+    #     os.getcwd() + "/saved_encoder_source",
+    #     icvf_enc_source,
+    #     force=True,
+    #     save_args=orbax_utils.save_args_from_target(icvf_enc_source),
+    # )
+    # exit()
+    
+    # # Stage 2. PRETRAIN Neural OT
+    # pbar = tqdm(range(5_000), leave=True)
+    # for i in pbar:
+    #     agent_data = target_random_buffer.sample(1024)
+    #     expert_data = source_expert_ds.sample(1024)
+    #     random_data = source_random_ds.sample(1024)
+    #     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+
+    #     if i % 100 == 0:
+    #         #se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
+    #         #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
+    #         sink = sinkhorn_loss(sa, se)
+    #         info = {"sink_dist": sink,
+    #                       "w_dist_elem": w_dist_elem,
+    #                       "w_dist_pairs": w_dist_pairs}
+    #         pbar.set_postfix(info)
+    #         wandb.log(info)
     
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
     for i in pbar:
@@ -248,8 +387,7 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.
-        reward = compute_reward_from_not(not_agent.encoders_state, not_agent.neural_dual_pairs.state_f.potential_value_fn,
-                                         not_agent.neural_dual_pairs.state_f.params, observation, next_observation)
+        reward = compute_reward_from_not()
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -266,28 +404,10 @@ def collect_expert(cfg: DictConfig) -> None:
         
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
-                agent_data = target_random_buffer.sample(256) # Maybe add prioritization?
-                expert_data = source_expert_ds.sample(1024)
-                random_data = source_random_ds.sample(256)
-                loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
-                #if i % 500 == 0:
-                    # if i % 10_000 == 0:
-                    #     info = not_agent.optimize_encoders(agent_data, expert_data, random_data)
-                if i % 10_000 == 0:
-                    pbar.set_postfix(info)
-                    # se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-                    # sn = not_agent.encoders_state(random_data.observations, method='encode_expert')
-                    #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
-                    sa = agent_data.observations[:, :2]
-                    se = expert_data.observations[:, :2]
-                    sn = random_data.observations[:, :2]
-                    
-                    sink = sinkhorn_loss(sa, se)
-                    print({"sink_dist": sink.item(),
-                            "w_dist_elem": w_dist_elem.item()})
-                    os.makedirs("plots", exist_ok=True)
-                    plot_embeddings(sn, se, sa)
-                actor_update_info = agent.update(agent_data)
+                target_data = target_random_buffer.sample(256)
+                source_data = combined_source_ds.sample(256)
+                #loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+                actor_update_info = agent.update(target_data)
 
         if i % cfg.log_interval == 0:
             wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],

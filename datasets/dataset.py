@@ -11,7 +11,7 @@ Batch = collections.namedtuple(
 
 ICVF_output = collections.namedtuple(
     'ICVF_output',
-    ['observations', 'actions', 'rewards', 'masks', 'next_observations', 'goals'])
+    ['observations', 'actions', 'rewards', 'masks', 'next_observations', 'goals', 'next_goals'])#, 'low_goals', 'high_goals', 'high_targets'])
 
 def split_into_trajectories(observations, actions, rewards, masks, dones_float,
                             next_observations):
@@ -64,7 +64,7 @@ class Dataset:
     def __init__(self, observations: np.ndarray, actions: np.ndarray,
                  rewards: np.ndarray, masks: np.ndarray,
                  dones_float: np.ndarray, next_observations: np.ndarray,
-                 size: int):
+                 size: int, init_terminals: bool = True):
         self.observations = observations
         self.actions = actions
         self.rewards = rewards
@@ -72,15 +72,36 @@ class Dataset:
         self.dones_float = dones_float
         self.next_observations = next_observations
         self.size = size
-        self.terminal_locs, = np.nonzero(dones_float > 0)
+        
+        if init_terminals:
+            self.terminal_locs,  = np.nonzero(dones_float > 0)
+        
+        self.p_trajgoal = 0.7
+        self.p_currgoal = 0.5
         
     def sample_goals(self, indx):
+        # batch_size = len(indx)
+        # # Random goals
+        # goal_indx = np.random.randint(self.size, size=batch_size)
+        # goal_indx = np.where(np.random.rand(batch_size) < 0.8, indx, goal_indx)
+        # return goal_indx
+        
         batch_size = len(indx)
         # Random goals
         goal_indx = np.random.randint(self.size, size=batch_size)
-        goal_indx = np.where(np.random.rand(batch_size) < 0.2, indx, goal_indx)
+        
+        # Goals from the same trajectory
+        final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]
+            
+        distance = np.random.rand(batch_size)
+        middle_goal_indx = np.round((np.minimum(indx + 1, final_state_indx) * distance + final_state_indx * (1 - distance))).astype(int)
+
+        goal_indx = np.where(np.random.rand(batch_size) < self.p_trajgoal, middle_goal_indx, goal_indx)
+        
+        # Goals at the current state
+        goal_indx = np.where(np.random.rand(batch_size) < self.p_currgoal, indx, goal_indx)
         return goal_indx
-    
+        
     def add_data(self, observations: np.ndarray, actions: np.ndarray,
                  rewards: np.ndarray, masks: np.ndarray,
                  dones_float: np.ndarray, next_observations: np.ndarray):
@@ -92,7 +113,6 @@ class Dataset:
         self.dones_float = np.concatenate([self.dones_float, dones_float], axis=0)
         self.next_observations = np.concatenate([self.next_observations, next_observations], axis=0)
         self.terminal_locs, = np.nonzero(self.dones_float > 0)
-
         return self
     
     def sample(self, batch_size: int, icvf: bool = False) -> Batch:
@@ -106,7 +126,8 @@ class Dataset:
                      rewards=rewards,
                      masks=1.0 - success.astype(float),
                      goals=jax.tree_util.tree_map(lambda arr: arr[goal_indx], self.observations),
-                     next_observations=self.next_observations[indx])
+                     next_observations=self.next_observations[indx],
+                     next_goals=jax.tree_util.tree_map(lambda arr: arr[goal_indx], self.next_observations))
             
         return Batch(observations=self.observations[indx],
                      actions=self.actions[indx],
