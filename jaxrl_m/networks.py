@@ -77,9 +77,9 @@ class RelativeRepresentation(nn.Module):
         if self.visual:
             inputs = self.module()(inputs)
         if self.layer_norm:
-            rep = LayerNormMLP(self.hidden_dims, activate_final=not self.bottleneck, activations=nn.gelu)(inputs)
+            rep = LayerNormMLP(self.hidden_dims, activate_final=not self.bottleneck, activations=nn.leaky_relu)(inputs)
         else:
-            rep = MLP(self.hidden_dims, activate_final=not self.bottleneck, activations=nn.gelu)(inputs)
+            rep = MLP(self.hidden_dims, activate_final=not self.bottleneck, activations=nn.leaky_relu)(inputs)
 
         if self.bottleneck:
             rep = rep / jnp.linalg.norm(rep, axis=-1, keepdims=True) * jnp.sqrt(self.rep_dim)
@@ -90,7 +90,7 @@ class CrossDomainAlign(nn.Module):
     target_encoder: Type[nn.Module]
     ema_encoder_source: Type[nn.Module]
     ema_encoder_target: Type[nn.Module]
-    not_estimator: Type[W2NeuralDual]
+    #not_estimator: Type[W2NeuralDual]
     
     def encode_source(self, obs: jnp.ndarray):
         return self.source_encoder(obs)
@@ -104,21 +104,25 @@ class CrossDomainAlign(nn.Module):
     def encode_target_ema(self, obs: jnp.ndarray):
         return self.ema_encoder_target(obs)
     
-    def get_potentials(self):
-        potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
-        return potentials
+    # def get_potentials(self):
+    #     potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
+    #     return potentials
     
-    def get_not_distance(self, encoded_source, encoded_target):
-        potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
-        return potentials.distance(encoded_source, encoded_target)
+    # def get_not_distance(self, encoded_source, encoded_target):
+    #     potentials = self.not_estimator.neural_dual_elements.to_dual_potentials(finetune_g=True)
+    #     return potentials.distance(encoded_source, encoded_target)
     
-    def update_not(self, batch_source, batch_target):
-        encoded_source = self.encode_source(batch_source.observations)
-        encoded_target = self.encode_target(batch_target.observations)
-        _, loss, w_dist = self.not_estimator.neural_dual_elements.update(encoded_source, encoded_target)
-        potentials = self.get_potentials()
-        return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
+    # def update_not(self, batch_source, batch_target):
+    #     encoded_source = self.encode_source(batch_source.observations)
+    #     encoded_target = self.encode_target(batch_target.observations)
+    #     _, loss, w_dist = self.not_estimator.neural_dual_elements.update(encoded_source, encoded_target)
+    #     potentials = self.get_potentials()
+    #     return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
     
+    # def update_neuraldual(self, batch_source, batch_target):
+    #     _, loss, w_dist = self.not_estimator.neural_dual_elements.update(batch_source, batch_target)
+    #     return loss, w_dist
+        
     @nn.compact # for init only
     def __call__(self, source_obs: jnp.ndarray, target_obs: jnp.ndarray) -> Dict[str, np.ndarray]:
         return {

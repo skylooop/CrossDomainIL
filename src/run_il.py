@@ -37,6 +37,7 @@ from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.record_video import RecordVideo
 
 import ott
+from agents.notdual import W2NeuralDualCustom
 
 @functools.partial(jax.jit, static_argnums=2)
 def sinkhorn_loss(
@@ -175,27 +176,36 @@ def collect_expert(cfg: DictConfig) -> None:
         from datasets.gc_dataset import GCSDataset
         
         neural_f = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[64, 64, 64, 64],
+            dim_hidden=[256, 256, 256],
             is_potential=True,
-            act_fn=jax.nn.leaky_relu
+            act_fn=jax.nn.gelu
         )
         neural_g = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[64, 64, 64, 64],
+            dim_hidden=[256, 256, 256],
             is_potential=True,
-            act_fn=jax.nn.leaky_relu
+            act_fn=jax.nn.gelu
         )
         
-        optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.999)
-        optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.999)
+        optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.9)
+        optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.9)
 
-        not_agent = NotAgent(
-            embed_dim=4,
+        # not_agent = NotAgent(
+        #     embed_dim=4,
+        #     neural_f=neural_f,
+        #     neural_g=neural_g,
+        #     optimizer_f=optimizer_f,
+        #     optimizer_g=optimizer_g,
+        #     num_train_iters=10_000,
+        #     expert_loss_coef=1.)
+        
+        not_agent = W2NeuralDualCustom(
+            dim_data=4, 
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
-            num_train_iters=10_000,
-            expert_loss_coef=1.)
+            num_train_iters=10_000 # 20_000
+        )
         
         joint_ot_agent = JointNOTAgent.create(
             cfg.seed,
@@ -209,29 +219,26 @@ def collect_expert(cfg: DictConfig) -> None:
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
-    for i in tqdm(range(2_000), desc="Pretraining NOT", position=1, leave=False):
+    for i in tqdm(range(1), desc="Pretraining NOT", position=1, leave=False):
         target_data = target_random_buffer.sample(1024, icvf=True)
         source_data = combined_source_ds.sample(1024, icvf=True)
-        potentials, encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
-        joint_ot_agent = joint_ot_agent.replace(dual_potentials=potentials)
-        
+        joint_ot_agent, encoded_source, encoded_target, not_info = joint_ot_agent.update_not(source_data, target_data)
+
     os.makedirs("viz_plots", exist_ok=True)
     for i in tqdm(range(200_001), leave=True):
-        target_data = target_random_buffer.sample(256, icvf=True)
-        source_data = combined_source_ds.sample(256, icvf=True)
-                
+        target_data = target_random_buffer.sample(512, icvf=True)
+        source_data = combined_source_ds.sample(512, icvf=True)
         if i % 20 == 0:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=True)
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, update_not=False)
-        
-        if i % 10_000 == 0:
+       
+        if i % 1_000 == 0:
             for i in tqdm(range(500), desc="Updating NOT", position=1, leave=False):
                 target_data = target_random_buffer.sample(1024, icvf=True)
                 source_data = combined_source_ds.sample(1024, icvf=True)
-                potentials, encoded_source, encoded_target, not_info = joint_ot_agent.net(source_data, target_data, method='update_not')
-                joint_ot_agent = joint_ot_agent.replace(dual_potentials=potentials)
-                
+                joint_ot_agent, encoded_source, encoded_target, not_info = joint_ot_agent.update_not(source_data, target_data)
+
         if i % 100_000 == 1:
             ckptr = PyTreeCheckpointer()
             ckptr.save(
@@ -240,10 +247,10 @@ def collect_expert(cfg: DictConfig) -> None:
                 force=True,
                 save_args=orbax_utils.save_args_from_target(joint_ot_agent),
             )
-        if i % 4_000 == 0:
+        if i % 510 == 0:
             # Target domain
             pca = PCA(n_components=2)
-            tsne = TSNE(n_components=2, perplexity=50, n_iter=1000)
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
             encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
             fitted_pca = pca.fit_transform(encoded_target)
             fitted_tsne = tsne.fit_transform(encoded_target)
@@ -257,7 +264,7 @@ def collect_expert(cfg: DictConfig) -> None:
             #####################################################################################
             # Source domain
             pca = PCA(n_components=2)
-            tsne = TSNE(n_components=2, perplexity=50, n_iter=1000)
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
             encoded_source = joint_ot_agent.net(source_data.observations, method='encode_source')
             fitted_pca = pca.fit_transform(encoded_source)
             fitted_tsne = tsne.fit_transform(encoded_source)
@@ -270,7 +277,7 @@ def collect_expert(cfg: DictConfig) -> None:
             ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
             fig.savefig(f"viz_plots/source_{i}_tsne.png")
             
-            neural_dual_dist = joint_ot_agent.net(encoded_source, encoded_target, method='get_not_distance')
+            neural_dual_dist = joint_ot_agent.dual_potentials.distance(encoded_source, encoded_target) #joint_ot_agent.net(encoded_source, encoded_target, method='get_not_distance')
             sinkhorn_dist = sinkhorn_loss(encoded_source, encoded_target)
             
             print(f"\nNeural dual distance between source and target data: {neural_dual_dist:.2f}")
