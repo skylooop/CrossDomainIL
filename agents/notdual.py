@@ -1,4 +1,5 @@
 from ott.neural.methods.neuraldual import W2NeuralDual
+from ott.neural.methods.expectile_neural_dual import ExpectileNeuralDual
 import jax.numpy as jnp
 import jax
 import numpy as np
@@ -77,6 +78,52 @@ class PotentialsCustom:
         C = jnp.mean(jnp.sum(x ** 2, axis=-1)) + \
             jnp.mean(jnp.sum(y ** 2, axis=-1))
         return C - 2 * (jax.vmap(f)(x) + jax.vmap(g)(y)).mean()
+    
+
+
+@jtu.register_pytree_node_class
+class ENOTPotentialsCustom:
+
+    def __init__(
+      self, state_f, state_g, cost_fn, is_bidirectional 
+    ):
+        
+        self.state_f = state_f
+        self.state_g = state_g
+        self.cost_fn = cost_fn
+        self.is_bidirectional = is_bidirectional
+
+    def tree_flatten(self):
+        return [self.state_f, self.state_g], {
+            "cost_fn": self.cost_fn,
+            "is_bidirectional": self.is_bidirectional
+        }
+
+    @classmethod
+    def tree_unflatten(  # noqa: D102
+        cls, aux_data, children
+    ):
+        return cls(*children, **aux_data)
+
+    def get_fg(self):
+    
+        grad_f = self.state_f.potential_gradient_fn(self.state_f.params)
+        g_value = self.state_g.potential_value_fn(self.state_g.params, None)
+        
+        if self.is_bidirectional:
+            transport = lambda x: self.cost_fn.twist_operator(x, grad_f(x), False)
+        else:
+            transport = lambda x: grad_f(x)
+
+        def g_cost_conjugate(x: jnp.ndarray) -> jnp.ndarray:
+            y_hat = jax.lax.stop_gradient(transport(x))
+            return -g_value(y_hat) + self.cost_fn(x, y_hat)
+            
+        return g_cost_conjugate, g_value
+    
+    def distance(self, x, y):
+        f, g = self.get_fg()
+        return (jax.vmap(f)(x) + jax.vmap(g)(y)).mean()
 
 
 class W2NeuralDualCustom(W2NeuralDual):
@@ -118,6 +165,45 @@ class W2NeuralDualCustom(W2NeuralDual):
         
        return PotentialsCustom(self.state_f, self.state_g, self.conjugate_solver)
     
+
+class ENOTCustom(ExpectileNeuralDual):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.step = 0
+    
+    def update(self, batch_source, batch_target):
+
+        update_forward = self.step % 2 == 0
+        train_batch = {}
+
+        if update_forward:
+            train_batch["source"] = batch_source
+            train_batch["target"] = batch_target
+            (self.state_f, self.state_g, loss, loss_f, loss_g, w_dist) = self.train_step(
+                self.state_f,
+                self.state_g,
+                train_batch,
+            )
+        else:
+            train_batch["target"] = batch_source
+            train_batch["source"] = batch_target
+            (self.state_g, self.state_f, loss, loss_f, loss_g, w_dist) = self.train_step(
+                self.state_g,
+                self.state_f,
+                train_batch,
+            )
+
+        self.step += 1
+       
+        return self, loss, w_dist
+    
+    def to_dual_potentials(
+      self, finetune_g: bool = True
+    ) -> ENOTPotentialsCustom:
+        
+       return ENOTPotentialsCustom(self.state_f, self.state_g, self.cost_fn, self.is_bidirectional)
+    
+
       
 class NotAgent:
     def __init__(

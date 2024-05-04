@@ -176,12 +176,14 @@ def compute_source_encoder_loss(net, params, batch):
         encoded_s = net(obs, params=params, method='encode_source')
         encoded_snext = net(goal, params=params, method='encode_source')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
         return - dist
     
     def get_v_ema(obs, goal):
         encoded_s = net(obs, method='encode_source_ema')
         encoded_snext = net(goal, method='encode_source_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
         return - dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
@@ -203,12 +205,14 @@ def compute_target_encoder_loss(net, params, batch):
         encoded_s = net(obs, params=params, method='encode_target')
         encoded_snext = net(goal, params=params, method='encode_target')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
         return - dist
     
     def get_v_ema(obs, goal):
         encoded_s = net(obs, method='encode_target_ema')
         encoded_snext = net(goal, method='encode_target_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
         return - dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
@@ -314,7 +318,7 @@ class JointNOTAgent(PyTreeNode):
                 info[f'target_enc/{k}'] = v
                 
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potentials, params, source_batch, target_batch)
-            loss = source_enc_loss + target_enc_loss + 0.1 * not_loss
+            loss = source_enc_loss + target_enc_loss + 0.2 * not_loss
             return loss, info
         
         new_ema_params_source = optax.incremental_update(self.net.params['source_encoder'], self.net.params['ema_encoder_source'], 0.005)

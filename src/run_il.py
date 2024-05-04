@@ -29,7 +29,7 @@ ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, ind
 import functools
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
-from agents.notdual import NotAgent
+from agents.notdual import ENOTCustom, NotAgent
 from icvf_utils.icvf_networks import JointNOTAgent
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
@@ -38,6 +38,7 @@ from gymnasium.wrappers.record_video import RecordVideo
 
 import ott
 from agents.notdual import W2NeuralDualCustom
+from ott.geometry import costs
 
 @functools.partial(jax.jit, static_argnums=2)
 def sinkhorn_loss(
@@ -186,8 +187,8 @@ def collect_expert(cfg: DictConfig) -> None:
             act_fn=jax.nn.gelu
         )
         
-        optimizer_f = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.9)
-        optimizer_g = optax.adam(learning_rate=1e-4, b1=0.9, b2=0.9)
+        optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+        optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
 
         # not_agent = NotAgent(
         #     embed_dim=4,
@@ -198,18 +199,21 @@ def collect_expert(cfg: DictConfig) -> None:
         #     num_train_iters=10_000,
         #     expert_loss_coef=1.)
         
-        not_agent = W2NeuralDualCustom(
-            dim_data=8, 
+        not_agent = ENOTCustom(
+            dim_data=16, 
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
+            cost_fn=costs.SqEuclidean(),
+            expectile = 0.99,
+            expectile_loss_coef = 0.4,
             num_train_iters=10_000 # 20_000
         )
         
         joint_ot_agent = JointNOTAgent.create(
             cfg.seed,
-            latent_dim=8,
+            latent_dim=16,
             not_agent=not_agent,
             target_obs=target_random_buffer.observations[0],
             source_obs=combined_source_ds.observations[0],
@@ -236,7 +240,7 @@ def collect_expert(cfg: DictConfig) -> None:
     for i in tqdm(range(200_001), leave=True):
         target_data = target_random_buffer.sample(512, icvf=True)
         source_data = combined_source_ds.sample(512, icvf=True)
-        if i % 10 == 0:
+        if i % 2 == 0:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=True)
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=False)
