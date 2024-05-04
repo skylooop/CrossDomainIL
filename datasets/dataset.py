@@ -120,7 +120,7 @@ class Dataset:
         if icvf:
             goal_indx = self.sample_goals(indx)            
             success = (indx == goal_indx)
-            rewards = success.astype(float) - 1
+            rewards = success.astype(float)*0.1 - 0.1 # - 1
             return ICVF_output(observations=self.observations[indx],
                      actions=self.actions[indx],
                      rewards=rewards,

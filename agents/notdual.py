@@ -5,7 +5,6 @@ import jax
 import numpy as np
 import flax.linen as nn
 from typing import Dict
-import optax
 from networks.common import TrainState
 import jax.tree_util as jtu
 from ott.problems.linear import potentials as dual_potentials

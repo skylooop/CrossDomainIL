@@ -253,7 +253,7 @@ class JointNOTAgent(PyTreeNode):
         latent_dim: int = 16,
         not_agent: Any = None,
         hidden_dims_source: Sequence[int] = (16, 16, 16, 16),
-        hidden_dims_target: Sequence[int] = (16, 16, 16, 16),
+        hidden_dims_target: Sequence[int] = (32, 32, 32, 32),
         dual_potentials=None
     ):
         rng = jax.random.PRNGKey(seed)

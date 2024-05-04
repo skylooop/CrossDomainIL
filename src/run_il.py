@@ -226,7 +226,6 @@ def collect_expert(cfg: DictConfig) -> None:
 
     def update_not(batch_source, batch_target):
         encoded_source, encoded_target = JointNOTAgent.encode(joint_ot_agent.net, batch_source, batch_target)
-        # print(encoded_source[0].shape, encoded_target[1].shape)
         new_not_agent, loss, w_dist = not_agent.update(jnp.concatenate(encoded_source, -1), jnp.concatenate(encoded_target, -1))
         potentials = new_not_agent.to_dual_potentials(finetune_g=True)
         return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
@@ -245,8 +244,8 @@ def collect_expert(cfg: DictConfig) -> None:
         else:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=False)
         
-        if i % 10 == 0:
-            for _ in range(5):
+        if i % 100 == 0:
+            for _ in range(100):
                 target_data = target_random_buffer.sample(1024, icvf=True)
                 source_data = combined_source_ds.sample(1024, icvf=True)
                 potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
@@ -263,7 +262,7 @@ def collect_expert(cfg: DictConfig) -> None:
             # Target domain
             pca = PCA(n_components=2)
             tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_target = jnp.concatenate(joint_ot_agent.net(target_data.observations, method='encode_target'), -1)
+            encoded_target = jnp.concatenate(joint_ot_agent.net(target_data.observations, method='encode_target'), axis=-1)
             fitted_pca = pca.fit_transform(encoded_target)
             fitted_tsne = tsne.fit_transform(encoded_target)
             fig, ax = plt.subplots()
@@ -277,7 +276,7 @@ def collect_expert(cfg: DictConfig) -> None:
             # Source domain
             pca = PCA(n_components=2)
             tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_source = jnp.concatenate(joint_ot_agent.net(source_data.observations, method='encode_source'), -1)
+            encoded_source = jnp.concatenate(joint_ot_agent.net(source_data.observations, method='encode_source'), axis=-1)
             fitted_pca = pca.fit_transform(encoded_source)
             fitted_tsne = tsne.fit_transform(encoded_source)
 
@@ -289,7 +288,17 @@ def collect_expert(cfg: DictConfig) -> None:
             ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
             fig.savefig(f"viz_plots/source_{i}_tsne.png")
             
-            neural_dual_dist = potentials.distance(encoded_source, encoded_target) #joint_ot_agent.net(encoded_source, encoded_target, method='get_not_distance')
+            ############################
+            # BOTH
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
+            both_domains = np.concatenate([encoded_target, encoded_source], axis=0)
+            tsne_both = tsne.fit_transform(both_domains)
+            
+            fig, ax = plt.subplots()
+            ax.scatter(tsne_both[:, 0], tsne_both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
+            fig.savefig(f"viz_plots/both_{i}_tsne.png")
+            
+            neural_dual_dist = potentials.distance(encoded_source, encoded_target)
             sinkhorn_dist = sinkhorn_loss(encoded_source, encoded_target)
             
             print(f"\nNeural dual distance between source and target data: {neural_dual_dist:.5f}")
