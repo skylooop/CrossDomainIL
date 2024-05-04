@@ -199,7 +199,7 @@ def collect_expert(cfg: DictConfig) -> None:
         #     expert_loss_coef=1.)
         
         not_agent = W2NeuralDualCustom(
-            dim_data=4, 
+            dim_data=8, 
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
@@ -209,7 +209,7 @@ def collect_expert(cfg: DictConfig) -> None:
         
         joint_ot_agent = JointNOTAgent.create(
             cfg.seed,
-            latent_dim=4,
+            latent_dim=8,
             not_agent=not_agent,
             target_obs=target_random_buffer.observations[0],
             source_obs=combined_source_ds.observations[0],
@@ -222,11 +222,12 @@ def collect_expert(cfg: DictConfig) -> None:
 
     def update_not(batch_source, batch_target):
         encoded_source, encoded_target = JointNOTAgent.encode(joint_ot_agent.net, batch_source, batch_target)
-        new_not_agent, loss, w_dist = not_agent.update(encoded_source, encoded_target)
+        # print(encoded_source[0].shape, encoded_target[1].shape)
+        new_not_agent, loss, w_dist = not_agent.update(jnp.concatenate(encoded_source, -1), jnp.concatenate(encoded_target, -1))
         potentials = new_not_agent.to_dual_potentials(finetune_g=True)
         return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
     
-    for i in tqdm(range(2000), desc="Pretraining NOT", position=1, leave=False):
+    for i in tqdm(range(1000), desc="Pretraining NOT", position=1, leave=False):
         target_data = target_random_buffer.sample(1024, icvf=True)
         source_data = combined_source_ds.sample(1024, icvf=True)
         potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
@@ -241,9 +242,10 @@ def collect_expert(cfg: DictConfig) -> None:
             joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=False)
         
         if i % 10 == 0:
-            target_data = target_random_buffer.sample(1024, icvf=True)
-            source_data = combined_source_ds.sample(1024, icvf=True)
-            potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+            for _ in range(5):
+                target_data = target_random_buffer.sample(1024, icvf=True)
+                source_data = combined_source_ds.sample(1024, icvf=True)
+                potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
 
         if i % 100_000 == 1:
             ckptr = PyTreeCheckpointer()
@@ -257,7 +259,7 @@ def collect_expert(cfg: DictConfig) -> None:
             # Target domain
             pca = PCA(n_components=2)
             tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
+            encoded_target = jnp.concatenate(joint_ot_agent.net(target_data.observations, method='encode_target'), -1)
             fitted_pca = pca.fit_transform(encoded_target)
             fitted_tsne = tsne.fit_transform(encoded_target)
             fig, ax = plt.subplots()
@@ -271,7 +273,7 @@ def collect_expert(cfg: DictConfig) -> None:
             # Source domain
             pca = PCA(n_components=2)
             tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_source = joint_ot_agent.net(source_data.observations, method='encode_source')
+            encoded_source = jnp.concatenate(joint_ot_agent.net(source_data.observations, method='encode_source'), -1)
             fitted_pca = pca.fit_transform(encoded_source)
             fitted_tsne = tsne.fit_transform(encoded_source)
 

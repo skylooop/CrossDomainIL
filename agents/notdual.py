@@ -13,7 +13,7 @@ from ott.neural.networks.layers.conjugate import FenchelConjugateLBFGS
 
 DEFAULT_CONJUGATE_SOLVER = FenchelConjugateLBFGS(
     gtol=1e-5,
-    max_iter=30,
+    max_iter=40,
     max_linesearch_iter=20,
     linesearch_type="backtracking",
 )
@@ -74,11 +74,14 @@ class PotentialsCustom:
     
     def distance(self, x, y):
         f, g = self.get_fg()
-        return -(jax.vmap(f)(x) + jax.vmap(g)(y)).mean()
+        C = jnp.mean(jnp.sum(x ** 2, axis=-1)) + \
+            jnp.mean(jnp.sum(y ** 2, axis=-1))
+        return C - 2 * (jax.vmap(f)(x) + jax.vmap(g)(y)).mean()
 
 
 class W2NeuralDualCustom(W2NeuralDual):
     def __init__(self, *args, **kwargs):
+        kwargs["conjugate_solver"] = DEFAULT_CONJUGATE_SOLVER
         super().__init__(*args, **kwargs)
         self.back_and_forth = True
         self.step = 0

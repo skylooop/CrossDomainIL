@@ -173,16 +173,16 @@ def apply_layernorm(x):
 
 def compute_source_encoder_loss(net, params, batch):
     def get_v(params, obs, goal):
-        encoded_s = apply_layernorm(net(obs, params=params, method='encode_source'))
-        encoded_snext = apply_layernorm(net(goal, params=params, method='encode_source'))
-        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
-        return  dist
+        encoded_s = net(obs, params=params, method='encode_source')
+        encoded_snext = net(goal, params=params, method='encode_source')
+        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        return - dist
     
     def get_v_ema(obs, goal):
-        encoded_s = apply_layernorm(net(obs, method='encode_source_ema'))
-        encoded_snext = apply_layernorm(net(goal, method='encode_source_ema'))
-        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
-        return  dist
+        encoded_s = net(obs, method='encode_source_ema')
+        encoded_snext = net(goal, method='encode_source_ema')
+        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        return - dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
@@ -200,16 +200,16 @@ def compute_source_encoder_loss(net, params, batch):
 
 def compute_target_encoder_loss(net, params, batch):
     def get_v(params, obs, goal):
-        encoded_s = apply_layernorm(net(obs, params=params, method='encode_target'))
-        encoded_snext = apply_layernorm(net(goal, params=params, method='encode_target'))
-        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
-        return  dist
+        encoded_s = net(obs, params=params, method='encode_target')
+        encoded_snext = net(goal, params=params, method='encode_target')
+        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        return - dist
     
     def get_v_ema(obs, goal):
-        encoded_s = apply_layernorm(net(obs, method='encode_target_ema'))
-        encoded_snext = apply_layernorm(net(goal, method='encode_target_ema'))
-        dist = jax.vmap(jnp.dot)(encoded_s, encoded_snext) # dot cost
-        return  dist
+        encoded_s = net(obs, method='encode_target_ema')
+        encoded_snext = net(goal, method='encode_target_ema')
+        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
+        return - dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
@@ -228,8 +228,10 @@ def compute_target_encoder_loss(net, params, batch):
 def compute_not_distance(network, potentials, params, source_batch, target_batch): 
     encoded_source = network(source_batch.observations, params=params, method='encode_source')   
     encoded_target = network(target_batch.observations, params=params, method='encode_target')
-    f, g = potentials.get_fg()
-    loss = - (jax.vmap(f)(encoded_source) + jax.vmap(g)(encoded_target)).mean()
+    encoded_source = jnp.concatenate(encoded_source, -1)
+    encoded_target = jnp.concatenate(encoded_target, -1)
+    # f, g = potentials.get_fg()
+    loss = potentials.distance(encoded_source, encoded_target)
     return loss
 
 class JointNOTAgent(PyTreeNode):
@@ -312,7 +314,7 @@ class JointNOTAgent(PyTreeNode):
                 info[f'target_enc/{k}'] = v
                 
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potentials, params, source_batch, target_batch)
-            loss = source_enc_loss + target_enc_loss + 1.5 * not_loss
+            loss = source_enc_loss + target_enc_loss + 0.1 * not_loss
             return loss, info
         
         new_ema_params_source = optax.incremental_update(self.net.params['source_encoder'], self.net.params['ema_encoder_source'], 0.005)

@@ -83,7 +83,9 @@ class RelativeRepresentation(nn.Module):
 
         if self.bottleneck:
             rep = rep / jnp.linalg.norm(rep, axis=-1, keepdims=True) * jnp.sqrt(self.rep_dim)
-        return rep
+
+        p = rep.shape[-1] // 2
+        return rep[..., :p], rep[..., p:]
 
 class CrossDomainAlign(nn.Module):
     source_encoder: Type[nn.Module]
