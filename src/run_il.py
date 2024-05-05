@@ -64,29 +64,12 @@ def plot_embeddings(sn, se, tn) -> None:
     wandb.log({'Embeddings': wandb.Image(fig)})
     plt.close()
 
-def supply_rng(f, rng=jax.random.PRNGKey(0)):
-    """
-    Wrapper that supplies a jax random key to a function (using keyword `seed`).
-    Useful for stochastic policies that require randomness.
-
-    Similar to functools.partial(f, seed=seed), but makes sure to use a different
-    key for each new call (to avoid stale rng keys).
-
-    """
-
-    def wrapped(*args, **kwargs):
-        nonlocal rng
-        rng, key = jax.random.split(rng)
-        return f(*args, seed=key, **kwargs)
-
-    return wrapped
-
 @jax.jit
-def compute_reward_from_not(agent, obs):
-    pass
-    ####
-    #reward = f_potential(f_params)(agent_pairs) # *2 - jnp.linalg.norm(agent_pairs)# ** 2
-    #return reward
+def compute_reward_from_not(not_agent, state_f_pairs, obs, next_obs):
+    encoded_target = jnp.concatenate(not_agent(obs, method='encode_target'))
+    encoded_target_next = jnp.concatenate(not_agent(next_obs, method='encode_target'))
+    reward = -state_f_pairs.potential_value_fn(state_f_pairs.params, None)(jnp.concatenate([encoded_target, encoded_target_next], axis=-1))
+    return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
 def collect_expert(cfg: DictConfig) -> None:
@@ -189,206 +172,241 @@ def collect_expert(cfg: DictConfig) -> None:
         
         optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
         optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
-
-        # not_agent = NotAgent(
-        #     embed_dim=4,
-        #     neural_f=neural_f,
-        #     neural_g=neural_g,
-        #     optimizer_f=optimizer_f,
-        #     optimizer_g=optimizer_g,
-        #     num_train_iters=10_000,
-        #     expert_loss_coef=1.)
+        latent_dim = 16
         
-        not_agent = ENOTCustom(
-            dim_data=16, 
+        not_agent_elems = ENOTCustom(
+            dim_data=latent_dim, 
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
             cost_fn=costs.SqEuclidean(),
             expectile = 0.99,
-            expectile_loss_coef = 0.4,
-            num_train_iters=10_000 # 20_000
+            expectile_loss_coef = 0.5, # 0.4
+            num_train_iters=10_000
         )
-        
+        not_agent_pairs = ENOTCustom(
+            dim_data=latent_dim * 2, 
+            neural_f=neural_f,
+            neural_g=neural_g,
+            optimizer_f=optimizer_f,
+            optimizer_g=optimizer_g,
+            cost_fn=costs.SqEuclidean(),
+            expectile = 0.99,
+            expectile_loss_coef = 0.5, # 0.4
+            num_train_iters=10_000
+        )
         joint_ot_agent = JointNOTAgent.create(
             cfg.seed,
-            latent_dim=16,
-            not_agent=not_agent,
+            latent_dim=latent_dim,
+            not_agent_elems=not_agent_elems,
+            not_agent_pairs=not_agent_pairs,
             target_obs=target_random_buffer.observations[0],
             source_obs=combined_source_ds.observations[0],
             dual_potentials=None
         )
         #gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, **GCSDataset.get_default_config())
+        def update_not(batch_source, batch_target):
+            encoded_source, encoded_target, encoded_source_next, encoded_target_next = JointNOTAgent.encode(joint_ot_agent.net, batch_source, batch_target)
+            
+            encoded_source = jnp.concatenate(encoded_source, -1)
+            encoded_target = jnp.concatenate(encoded_target, -1)
+            encoded_source_next = jnp.concatenate(encoded_source_next, -1)
+            encoded_target_next = jnp.concatenate(encoded_target_next, -1)
+            
+            new_not_agent_elems, loss_elems, w_dist_elems = not_agent_elems.update(encoded_source, encoded_target)
+            new_not_agent_pairs, loss_pairs, w_dist_pairs = not_agent_pairs.update(batch_source=jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                                                                    batch_target=jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+            
+            potentials_elems = new_not_agent_elems.to_dual_potentials(finetune_g=True)
+            potentials_pairs = new_not_agent_pairs.to_dual_potentials(finetune_g=True)
+            return potentials_elems, potentials_pairs, encoded_source, encoded_target, {"loss_elems": loss_elems, "w_dist_elems": w_dist_elems,
+                                                                                        "loss_pairs": loss_pairs, "w_dist_pairs": w_dist_pairs}
+            
+        for i in tqdm(range(1_000), desc="Pretraining NOT", position=1, leave=False):
+            target_data = target_random_buffer.sample(1024, icvf=True)
+            source_data = combined_source_ds.sample(1024, icvf=True)
+            potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+
+        os.makedirs("viz_plots", exist_ok=True)
+        for i in tqdm(range(50_005), leave=True):
+            target_data = target_random_buffer.sample(512, icvf=True)
+            source_data = combined_source_ds.sample(512, icvf=True)
+            if i % 2 == 0:
+                joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=True)
+            else:
+                joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=False)
+            
+            if i % 30 == 0:
+                for _ in range(200):
+                    target_data = target_random_buffer.sample(1024, icvf=True)
+                    source_data = combined_source_ds.sample(1024, icvf=True)
+                    potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+
+            if i % 50_000 == 1:
+                ckptr = PyTreeCheckpointer()
+                ckptr.save(
+                    os.getcwd() + "/saved_encoding_agent",
+                    joint_ot_agent,
+                    force=True,
+                    save_args=orbax_utils.save_args_from_target(joint_ot_agent),
+                )
+            if i % 2010 == 0:
+                # Target domain
+                #pca = PCA(n_components=2)
+                tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+                
+                encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
+                encoded_target_next = joint_ot_agent.net(target_data.next_observations, method='encode_target')
+                encoded_target = jnp.concatenate(encoded_target, -1)
+                encoded_target_next = jnp.concatenate(encoded_target_next, -1)
+                
+                #fitted_pca = pca.fit_transform(encoded_target)
+                fitted_tsne = tsne.fit_transform(encoded_target)
+                # fig, ax = plt.subplots()
+                # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+                # fig.savefig(f"viz_plots/target_{i}_pca.png")
+                fig, ax = plt.subplots()
+                ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+                fig.savefig(f"viz_plots/target_{i}_tsne.png")
+                
+                #####################################################################################
+                # Source domain
+                #pca = PCA(n_components=2)
+                tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+                encoded_source = joint_ot_agent.net(source_data.observations, method='encode_source')
+                encoded_source_next = joint_ot_agent.net(source_data.next_observations, method='encode_source')
+                encoded_source = jnp.concatenate(encoded_source, -1)
+                encoded_source_next = jnp.concatenate(encoded_source_next, -1)
+
+                #fitted_pca = pca.fit_transform(encoded_source)
+                fitted_tsne = tsne.fit_transform(encoded_source)
+
+                # fig, ax = plt.subplots()
+                # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+                # fig.savefig(f"viz_plots/source_{i}_pca.png")
+
+                fig, ax = plt.subplots()
+                ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+                fig.savefig(f"viz_plots/source_{i}_tsne.png")
+                
+                ############################
+                # BOTH
+                tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
+                both_domains = np.concatenate([encoded_target, encoded_source], axis=0)
+                tsne_both = tsne.fit_transform(both_domains)
+                
+                fig, ax = plt.subplots()
+                ax.scatter(tsne_both[:, 0], tsne_both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
+                fig.savefig(f"viz_plots/both_{i}_tsne.png")
+                
+                neural_dual_dist_elems = potential_elems.distance(encoded_source, encoded_target)
+                neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                                                                jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+                sinkhorn_dist_elems = sinkhorn_loss(encoded_source, encoded_target)
+                sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                                                    jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+                
+                print(f"\nNeural dual distance between elements in source and target data: {neural_dual_dist_elems:.5f}")
+                print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
+                print(f"Sinkhorn distance between elements in source and target data: {sinkhorn_dist_elems:.5f}")
+                print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
+        
+        ########################## SAVING ####################################      
+        ckptr_agent = PyTreeCheckpointer()
+        ckptr_agent.save(
+            os.getcwd() + "/saved_encoding_agent",
+            joint_ot_agent,
+            force=True,
+            save_args=orbax_utils.save_args_from_target(joint_ot_agent),
+        )
+        ckptr_pairs_potentials = PyTreeCheckpointer()
+        ckptr_pairs_potentials.save(
+            os.getcwd() + "/saved_potentials_pairs",
+            not_agent_pairs.state_f,
+            force=True,
+            save_args=orbax_utils.save_args_from_target(not_agent_pairs.state_f),
+        )
+        ckptr_elems_potentials = PyTreeCheckpointer()
+        ckptr_elems_potentials.save(
+            os.getcwd() + "/saved_potentials_elems",
+            not_agent_elems.state_f,
+            force=True,
+            save_args=orbax_utils.save_args_from_target(not_agent_elems.state_f),
+        )
+    else:
+        neural_f = ott.neural.networks.potentials.PotentialMLP(
+            dim_hidden=[64, 64, 64],
+            is_potential=True,
+            act_fn=jax.nn.gelu
+        )
+        neural_g = ott.neural.networks.potentials.PotentialMLP(
+            dim_hidden=[64, 64, 64],
+            is_potential=True,
+            act_fn=jax.nn.gelu
+        )
+        
+        optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+        optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+        latent_dim = 16
+        
+        not_agent_elems = ENOTCustom(
+            dim_data=latent_dim, 
+            neural_f=neural_f,
+            neural_g=neural_g,
+            optimizer_f=optimizer_f,
+            optimizer_g=optimizer_g,
+            cost_fn=costs.SqEuclidean(),
+            expectile = 0.99,
+            expectile_loss_coef = 0.5, # 0.4
+            num_train_iters=10_000
+        )
+        not_agent_pairs = ENOTCustom(
+            dim_data=latent_dim * 2, 
+            neural_f=neural_f,
+            neural_g=neural_g,
+            optimizer_f=optimizer_f,
+            optimizer_g=optimizer_g,
+            cost_fn=costs.SqEuclidean(),
+            expectile = 0.99,
+            expectile_loss_coef = 0.5, # 0.4
+            num_train_iters=10_000
+        )
+        joint_ot_agent = JointNOTAgent.create(
+            cfg.seed,
+            latent_dim=latent_dim,
+            not_agent_elems=not_agent_elems,
+            not_agent_pairs=not_agent_pairs,
+            target_obs=target_random_buffer.observations[0],
+            source_obs=combined_source_ds.observations[0],
+            dual_potentials=None
+        )
+        
+        ckptr = PyTreeCheckpointer()
+        restored_ckpt_target = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_encoding_agent")
+        potential_pairs_ckpt = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_potentials_pairs")
+        state_f_pairs = not_agent_pairs.state_f.replace(params=potential_pairs_ckpt['params'])
+        joint_ot_agent = joint_ot_agent.net.replace(params=restored_ckpt_target['net']['params'])
+        
+        def update_not(batch_source, batch_target):
+            encoded_source, encoded_target, encoded_source_next, encoded_target_next = JointNOTAgent.encode(joint_ot_agent, batch_source, batch_target)
+            
+            encoded_source = jnp.concatenate(encoded_source, -1)
+            encoded_target = jnp.concatenate(encoded_target, -1)
+            encoded_source_next = jnp.concatenate(encoded_source_next, -1)
+            encoded_target_next = jnp.concatenate(encoded_target_next, -1)
+            
+            new_not_agent_elems, loss_elems, w_dist_elems = not_agent_elems.update(encoded_source, encoded_target)
+            new_not_agent_pairs, loss_pairs, w_dist_pairs = not_agent_pairs.update(batch_source=jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                                                                    batch_target=jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+            
+            potentials_elems = new_not_agent_elems.to_dual_potentials(finetune_g=True)
+            potentials_pairs = new_not_agent_pairs.to_dual_potentials(finetune_g=True)
+            return potentials_elems, potentials_pairs, encoded_source, encoded_target, {"loss_elems": loss_elems, "w_dist_elems": w_dist_elems,
+                                                                                        "loss_pairs": loss_pairs, "w_dist_pairs": w_dist_pairs}
     
     (observation, info), done = env.reset(seed=cfg.seed), False
-    potentials = None
-
-    def update_not(batch_source, batch_target):
-        encoded_source, encoded_target = JointNOTAgent.encode(joint_ot_agent.net, batch_source, batch_target)
-        new_not_agent, loss, w_dist = not_agent.update(jnp.concatenate(encoded_source, -1), jnp.concatenate(encoded_target, -1))
-        potentials = new_not_agent.to_dual_potentials(finetune_g=True)
-        return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
-    
-    for i in tqdm(range(1000), desc="Pretraining NOT", position=1, leave=False):
-        target_data = target_random_buffer.sample(1024, icvf=True)
-        source_data = combined_source_ds.sample(1024, icvf=True)
-        potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
-
     os.makedirs("viz_plots", exist_ok=True)
-    for i in tqdm(range(200_001), leave=True):
-        target_data = target_random_buffer.sample(512, icvf=True)
-        source_data = combined_source_ds.sample(512, icvf=True)
-        if i % 2 == 0:
-            joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=True)
-        else:
-            joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potentials, update_not=False)
-        
-        if i % 100 == 0:
-            for _ in range(100):
-                target_data = target_random_buffer.sample(1024, icvf=True)
-                source_data = combined_source_ds.sample(1024, icvf=True)
-                potentials, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
-
-        if i % 100_000 == 1:
-            ckptr = PyTreeCheckpointer()
-            ckptr.save(
-                os.getcwd() + "/saved_encoding_agent",
-                joint_ot_agent,
-                force=True,
-                save_args=orbax_utils.save_args_from_target(joint_ot_agent),
-            )
-        if i % 2010 == 0:
-            # Target domain
-            pca = PCA(n_components=2)
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_target = jnp.concatenate(joint_ot_agent.net(target_data.observations, method='encode_target'), axis=-1)
-            fitted_pca = pca.fit_transform(encoded_target)
-            fitted_tsne = tsne.fit_transform(encoded_target)
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-            fig.savefig(f"viz_plots/target_{i}_pca.png")
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-            fig.savefig(f"viz_plots/target_{i}_tsne.png")
-            
-            #####################################################################################
-            # Source domain
-            pca = PCA(n_components=2)
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_source = jnp.concatenate(joint_ot_agent.net(source_data.observations, method='encode_source'), axis=-1)
-            fitted_pca = pca.fit_transform(encoded_source)
-            fitted_tsne = tsne.fit_transform(encoded_source)
-
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-            fig.savefig(f"viz_plots/source_{i}_pca.png")
-
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-            fig.savefig(f"viz_plots/source_{i}_tsne.png")
-            
-            ############################
-            # BOTH
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
-            both_domains = np.concatenate([encoded_target, encoded_source], axis=0)
-            tsne_both = tsne.fit_transform(both_domains)
-            
-            fig, ax = plt.subplots()
-            ax.scatter(tsne_both[:, 0], tsne_both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
-            fig.savefig(f"viz_plots/both_{i}_tsne.png")
-            
-            neural_dual_dist = potentials.distance(encoded_source, encoded_target)
-            sinkhorn_dist = sinkhorn_loss(encoded_source, encoded_target)
-            
-            print(f"\nNeural dual distance between source and target data: {neural_dual_dist:.5f}")
-            print(f"Sinkhorn distance between source and target data: {sinkhorn_dist:.5f}")
-            
-    ckptr = PyTreeCheckpointer()
-    ckptr.save(
-        os.getcwd() + "/saved_encoding_agent",
-        joint_ot_agent,
-        force=True,
-        save_args=orbax_utils.save_args_from_target(joint_ot_agent),
-    )
-    exit()
-    # Stage 1. Pretrain Encoders
-    ###
-    # os.makedirs("viz_plots", exist_ok=True)
-    # for i in tqdm(range(250_000), leave=True):
-    #     agent_data = target_random_buffer.sample(256, icvf=True)
-    #     icvf_enc_target, info = icvf_enc_target.update(agent_data)
-        
-    #     if i % 50_000 == 1:
-            
-    #         pca = PCA(n_components=2)
-    #         tsne = TSNE(n_components=2, perplexity=30, n_iter=1000)
-            
-    #         fitted_pca = pca.fit_transform(icvf_enc_target.net(agent_data.observations[:]))
-    #         fitted_tsne = tsne.fit_transform(icvf_enc_target.net(agent_data.observations[:]))
-
-    #         fig, ax = plt.subplots()
-    #         ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-    #         fig.savefig(f"viz_plots/target_{i}_pca.png")
-
-    #         fig, ax = plt.subplots()
-    #         ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-    #         fig.savefig(f"viz_plots/target_{i}_tsne.png")
-        
-    # ckptr = PyTreeCheckpointer()
-    # ckptr.save(
-    #     os.getcwd() + "/saved_encoder_target",
-    #     icvf_enc_target,
-    #     force=True,
-    #     save_args=orbax_utils.save_args_from_target(icvf_enc_target),
-    # )
-    # print("Finished Training Target Domain Encoder")
-    
-    # for i in tqdm(range(250_000), leave=True):
-    #     agent_data = combined_source_ds.sample(256, icvf=True)
-    #     icvf_enc_source, info = icvf_enc_source.update(agent_data)
-        
-    #     if i % 50_000 == 1:
-    #         pca = PCA(n_components=2)
-    #         tsne = TSNE(n_components=2, perplexity=30, n_iter=1000)
-            
-    #         fitted_pca = pca.fit_transform(icvf_enc_source.net(agent_data.observations[:]))
-    #         fitted_tsne = tsne.fit_transform(icvf_enc_source.net(agent_data.observations[:]))
-
-    #         fig, ax = plt.subplots()
-    #         ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-    #         fig.savefig(f"viz_plots/source_{i}_pca.png")
-
-    #         fig, ax = plt.subplots()
-    #         ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-    #         fig.savefig(f"viz_plots/source_{i}_tsne.png")
-    # ckptr = PyTreeCheckpointer()
-    # ckptr.save(
-    #     os.getcwd() + "/saved_encoder_source",
-    #     icvf_enc_source,
-    #     force=True,
-    #     save_args=orbax_utils.save_args_from_target(icvf_enc_source),
-    # )
-    # exit()
-    
-    # # Stage 2. PRETRAIN Neural OT
-    # pbar = tqdm(range(5_000), leave=True)
-    # for i in pbar:
-    #     agent_data = target_random_buffer.sample(1024)
-    #     expert_data = source_expert_ds.sample(1024)
-    #     random_data = source_random_ds.sample(1024)
-    #     loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
-
-    #     if i % 100 == 0:
-    #         #se = not_agent.encoders_state(expert_data.observations, method='encode_expert')
-    #         #sa = not_agent.encoders_state(agent_data.observations, method='encode_agent')
-    #         sink = sinkhorn_loss(sa, se)
-    #         info = {"sink_dist": sink,
-    #                       "w_dist_elem": w_dist_elem,
-    #                       "w_dist_pairs": w_dist_pairs}
-    #         pbar.set_postfix(info)
-    #         wandb.log(info)
-    
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
     for i in pbar:
         if i < cfg.algo.start_training:
@@ -402,7 +420,7 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.
-        reward = compute_reward_from_not()
+        reward = compute_reward_from_not(joint_ot_agent, state_f_pairs, observation, next_observation) - 2.
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -421,7 +439,7 @@ def collect_expert(cfg: DictConfig) -> None:
             for _ in range(cfg.algo.updates_per_step):
                 target_data = target_random_buffer.sample(256)
                 source_data = combined_source_ds.sample(256)
-                #loss_elem, loss_pairs, w_dist_elem, w_dist_pairs = not_agent.optimize_not(agent_data, expert_data, random_data)
+                potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
                 actor_update_info = agent.update(target_data)
 
         if i % cfg.log_interval == 0:
@@ -430,6 +448,62 @@ def collect_expert(cfg: DictConfig) -> None:
                     f"Training/Entropy": actor_update_info['entropy'],
                     f"Training/Temperature": actor_update_info['temperature'],
                     f"Training/Temp loss": actor_update_info['temp_loss']})
+            #pca = PCA(n_components=2)
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+                
+            encoded_target = joint_ot_agent(target_data.observations, method='encode_target')
+            encoded_target_next = joint_ot_agent(target_data.next_observations, method='encode_target')
+            encoded_target = jnp.concatenate(encoded_target, -1)
+            encoded_target_next = jnp.concatenate(encoded_target_next, -1)
+            
+            #fitted_pca = pca.fit_transform(encoded_target)
+            fitted_tsne = tsne.fit_transform(encoded_target)
+            fig, ax = plt.subplots()
+            # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+            # fig.savefig(f"viz_plots/target_{i}_pca.png")
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+            fig.savefig(f"viz_plots/target_{i}_tsne.png")
+            
+            #####################################################################################
+            # Source domain
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+            encoded_source = joint_ot_agent(source_data.observations, method='encode_source')
+            encoded_source_next = joint_ot_agent(source_data.next_observations, method='encode_source')
+            encoded_source = jnp.concatenate(encoded_source, -1)
+            encoded_source_next = jnp.concatenate(encoded_source_next, -1)
+
+            fitted_tsne = tsne.fit_transform(encoded_source)
+
+            # fig, ax = plt.subplots()
+            # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
+            # fig.savefig(f"viz_plots/source_{i}_pca.png")
+
+            fig, ax = plt.subplots()
+            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+            fig.savefig(f"viz_plots/source_{i}_tsne.png")
+            
+            ############################
+            # BOTH
+            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
+            both_domains = np.concatenate([encoded_target, encoded_source], axis=0)
+            tsne_both = tsne.fit_transform(both_domains)
+            
+            fig, ax = plt.subplots()
+            ax.scatter(tsne_both[:, 0], tsne_both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
+            fig.savefig(f"viz_plots/both_{i}_tsne.png")
+            
+            neural_dual_dist_elems = potential_elems.distance(encoded_source, encoded_target)
+            neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                                                            jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+            sinkhorn_dist_elems = sinkhorn_loss(encoded_source, encoded_target)
+            sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                                                jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+            
+            print(f"\nNeural dual distance between elements in source and target data: {neural_dual_dist_elems:.5f}")
+            print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
+            print(f"Sinkhorn distance between elements in source and target data: {sinkhorn_dist_elems:.5f}")
+            print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
                 
         if i % cfg.eval_interval == 0:
             eval_stats = evaluate(agent, eval_env, cfg.eval_episodes)

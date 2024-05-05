@@ -171,7 +171,7 @@ def apply_layernorm(x):
     net_def = nn.LayerNorm(use_bias=False, use_scale=False)
     return net_def.apply({'params': {}}, x)
 
-def compute_source_encoder_loss(net, params, batch):
+def compute_source_encoder_loss_elem(net, params, batch):
     def get_v(params, obs, goal):
         encoded_s = net(obs, params=params, method='encode_source')
         encoded_snext = net(goal, params=params, method='encode_source')
@@ -200,7 +200,7 @@ def compute_source_encoder_loss(net, params, batch):
     loss = expectile_fn(diff, 0.9).mean()
     return loss, {'source_encoder_loss': loss}
 
-def compute_target_encoder_loss(net, params, batch):
+def compute_target_encoder_loss_elem(net, params, batch):
     def get_v(params, obs, goal):
         encoded_s = net(obs, params=params, method='encode_target')
         encoded_snext = net(goal, params=params, method='encode_target')
@@ -229,20 +229,27 @@ def compute_target_encoder_loss(net, params, batch):
     loss = expectile_fn(diff, 0.9).mean()
     return loss, {'target_encoder_loss': loss}
 
-def compute_not_distance(network, potentials, params, source_batch, target_batch): 
+def compute_not_distance(network, potential_elems, potential_pairs, params, source_batch, target_batch): 
     encoded_source = network(source_batch.observations, params=params, method='encode_source')   
     encoded_target = network(target_batch.observations, params=params, method='encode_target')
+    encoded_source_next = network(source_batch.next_observations, params=params, method='encode_source')   
+    encoded_target_next = network(target_batch.next_observations, params=params, method='encode_target')
+    
     encoded_source = jnp.concatenate(encoded_source, -1)
     encoded_target = jnp.concatenate(encoded_target, -1)
-    # f, g = potentials.get_fg()
-    loss = potentials.distance(encoded_source, encoded_target)
+    encoded_source_next = jnp.concatenate(encoded_source_next, -1)
+    encoded_target_next = jnp.concatenate(encoded_target_next, -1)
+    
+    loss_elems = potential_elems.distance(encoded_source, encoded_target)
+    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), -1), jnp.concatenate((encoded_target, encoded_target_next), -1))
+    loss = loss_elems + loss_pairs
     return loss
 
 class JointNOTAgent(PyTreeNode):
     rng: PRNGKeyArray
     net: TrainState
-    # dual_potentials: Any
-    # neural_dual_agent: Any = flax.struct.field(pytree_node=False)
+    # dual_potentials_pairs: Any = None
+    # dual_potentials_elems: Any = None
     
     @classmethod
     def create(
@@ -251,7 +258,8 @@ class JointNOTAgent(PyTreeNode):
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
         latent_dim: int = 16,
-        not_agent: Any = None,
+        not_agent_elems: Any = None,
+        not_agent_pairs: Any = None,
         hidden_dims_source: Sequence[int] = (16, 16, 16, 16),
         hidden_dims_target: Sequence[int] = (32, 32, 32, 32),
         dual_potentials=None
@@ -294,8 +302,11 @@ class JointNOTAgent(PyTreeNode):
     def encode(net, batch_source, batch_target):
         encoded_source = net(batch_source.observations, method='encode_source')
         encoded_target = net(batch_target.observations, method='encode_target')
-
-        return encoded_source, encoded_target
+        
+        encoded_source_next = net(batch_source.next_observations, method='encode_source')
+        encoded_target_next = net(batch_target.next_observations, method='encode_target')
+        
+        return encoded_source, encoded_target, encoded_source_next, encoded_target_next
     
     # def update_not(self, batch_source, batch_target):
     #     encoded_source, encoded_target = JointNOTAgent.encode(self.net, batch_source, batch_target)
@@ -305,20 +316,20 @@ class JointNOTAgent(PyTreeNode):
         # return self.replace(dual_potentials=potentials, neural_dual_agent=new_not_agent), encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
     
     @functools.partial(jax.jit, static_argnames=('update_not'))
-    def update(self, source_batch, target_batch, potentials, update_not: bool):
+    def update(self, source_batch, target_batch, potential_elems, potential_pairs, update_not: bool):
         def loss_fn(params):
             info = {}
             
-            source_enc_loss, source_enc_info = compute_source_encoder_loss(self.net, params, source_batch)
+            source_enc_loss_elem, source_enc_info = compute_source_encoder_loss_elem(self.net, params, source_batch)
             for k, v in source_enc_info.items():
                 info[f'source_enc/{k}'] = v
             
-            target_enc_loss, target_enc_info = compute_target_encoder_loss(self.net, params, target_batch)
+            target_enc_loss_elem, target_enc_info = compute_target_encoder_loss_elem(self.net, params, target_batch)
             for k, v in target_enc_info.items():
                 info[f'target_enc/{k}'] = v
-                
-            not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potentials, params, source_batch, target_batch)
-            loss = source_enc_loss + target_enc_loss + 0.2 * not_loss
+            
+            not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potential_elems, potential_pairs, params, source_batch, target_batch)
+            loss = (source_enc_loss_elem + target_enc_loss_elem) + 0.2 * not_loss
             return loss, info
         
         new_ema_params_source = optax.incremental_update(self.net.params['source_encoder'], self.net.params['ema_encoder_source'], 0.005)

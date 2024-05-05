@@ -202,8 +202,6 @@ class ENOTCustom(ExpectileNeuralDual):
         
        return ENOTPotentialsCustom(self.state_f, self.state_g, self.cost_fn, self.is_bidirectional)
     
-
-      
 class NotAgent:
     def __init__(
         self,

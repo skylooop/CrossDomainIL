@@ -14,5 +14,5 @@ eval_interval: 20_000 #10_000
 save_expert_episodes: 20
 save_video_each_ep: 19
 
-optimal_transport: True
+optimal_transport: False # True
 train_expert: False
