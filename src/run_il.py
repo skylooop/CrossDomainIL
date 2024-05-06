@@ -76,7 +76,7 @@ def compute_reward_from_not(not_agent, potential_pairs, obs, next_obs):
 def compute_reward_from_not_elem(not_agent, potential_elems, observation):
     encoded_source = jnp.concatenate(not_agent(observation, method='encode_target'))
     f, g = potential_elems.get_fg()
-    reward = -g(encoded_source)
+    reward = -g(encoded_source) * 20
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -428,7 +428,7 @@ def collect_expert(cfg: DictConfig) -> None:
             action = env.action_space.sample()
         else:
             action = agent.sample_actions(observation)
-        next_observation, reward, terminated, truncated, info = env.step(action)
+        next_observation, _, terminated, truncated, info = env.step(action) # reward
         done = terminated or truncated
         
         if not done:
