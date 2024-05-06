@@ -65,10 +65,18 @@ def plot_embeddings(sn, se, tn) -> None:
     plt.close()
 
 @jax.jit
-def compute_reward_from_not(not_agent, state_f_pairs, obs, next_obs):
+def compute_reward_from_not(not_agent, potential_pairs, obs, next_obs):
     encoded_target = jnp.concatenate(not_agent(obs, method='encode_target'))
     encoded_target_next = jnp.concatenate(not_agent(next_obs, method='encode_target'))
-    reward = -state_f_pairs.potential_value_fn(state_f_pairs.params, None)(jnp.concatenate([encoded_target, encoded_target_next], axis=-1))
+    f, g = potential_pairs.get_fg()
+    reward = -g(jnp.concatenate([encoded_target, encoded_target_next], axis=-1))
+    return reward
+
+@jax.jit
+def compute_reward_from_not_elem(not_agent, potential_elems, observation):
+    encoded_source = jnp.concatenate(not_agent(observation, method='encode_target'))
+    f, g = potential_elems.get_fg()
+    reward = -g(encoded_source)
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -385,7 +393,11 @@ def collect_expert(cfg: DictConfig) -> None:
         ckptr = PyTreeCheckpointer()
         restored_ckpt_target = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_encoding_agent")
         potential_pairs_ckpt = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_potentials_pairs")
+        potential_elems_ckpt = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_potentials_elems")
         state_f_pairs = not_agent_pairs.state_f.replace(params=potential_pairs_ckpt['params'])
+        state_f_elems = not_agent_elems.state_f.replace(params=potential_elems_ckpt['params'])
+        not_agent_pairs.state_f = state_f_pairs
+        not_agent_elems.state_f = state_f_elems
         joint_ot_agent = joint_ot_agent.net.replace(params=restored_ckpt_target['net']['params'])
         
         def update_not(batch_source, batch_target):
@@ -406,6 +418,9 @@ def collect_expert(cfg: DictConfig) -> None:
                                                                                         "loss_pairs": loss_pairs, "w_dist_pairs": w_dist_pairs}
     
     (observation, info), done = env.reset(seed=cfg.seed), False
+    
+    potential_pairs = not_agent_pairs.to_dual_potentials()
+    potential_elems = not_agent_elems.to_dual_potentials()
     os.makedirs("viz_plots", exist_ok=True)
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
     for i in pbar:
@@ -420,7 +435,9 @@ def collect_expert(cfg: DictConfig) -> None:
             mask = 1.0
         else:
             mask = 0.
-        reward = compute_reward_from_not(joint_ot_agent, state_f_pairs, observation, next_observation) - 2.
+        #reward = compute_reward_from_not(joint_ot_agent, potential_pairs, observation, next_observation)
+        reward = compute_reward_from_not_elem(joint_ot_agent, potential_elems, observation)
+        
         target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
         observation = next_observation
         
@@ -494,16 +511,16 @@ def collect_expert(cfg: DictConfig) -> None:
             fig.savefig(f"viz_plots/both_{i}_tsne.png")
             
             neural_dual_dist_elems = potential_elems.distance(encoded_source, encoded_target)
-            neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-                                                            jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+            # neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+            #                                                 jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
             sinkhorn_dist_elems = sinkhorn_loss(encoded_source, encoded_target)
-            sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-                                                jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+            # sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+            #                                     jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
             
             print(f"\nNeural dual distance between elements in source and target data: {neural_dual_dist_elems:.5f}")
-            print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
+            #print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
             print(f"Sinkhorn distance between elements in source and target data: {sinkhorn_dist_elems:.5f}")
-            print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
+            #print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
                 
         if i % cfg.eval_interval == 0:
             eval_stats = evaluate(agent, eval_env, cfg.eval_episodes)
