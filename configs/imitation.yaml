@@ -8,11 +8,11 @@ defaults:
 
 seed: 42
 max_steps: 1_000_000
-log_interval: 1_000
+log_interval: 20_000
 eval_episodes: 20
 eval_interval: 20_000 #10_000
 save_expert_episodes: 20
 save_video_each_ep: 19
 
-optimal_transport: False # True
+optimal_transport: True # True
 train_expert: False

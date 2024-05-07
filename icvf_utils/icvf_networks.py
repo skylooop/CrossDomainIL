@@ -176,21 +176,19 @@ def compute_source_encoder_loss_elem(net, params, batch):
         encoded_s = net(obs, params=params, method='encode_source')
         encoded_snext = net(goal, params=params, method='encode_source')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
         return - dist
     
     def get_v_ema(obs, goal):
         encoded_s = net(obs, method='encode_source_ema')
         encoded_snext = net(goal, method='encode_source_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
         return - dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
     nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
     nV = jnp.maximum(nV_1, nV_2)
-    target_V = batch.rewards + 0.99 * batch.masks * nV
+    target_V = batch.rewards + 0.96 * batch.masks * nV
 
     def expectile_fn(diff, expectile:float=0.9):
         weight = jnp.where(diff >= 0, expectile, 1-expectile)
@@ -212,14 +210,13 @@ def compute_target_encoder_loss_elem(net, params, batch):
         encoded_s = net(obs, method='encode_target_ema')
         encoded_snext = net(goal, method='encode_target_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
-        return - dist
+        return -dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
     nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
     nV = jnp.maximum(nV_1, nV_2)
-    target_V = batch.rewards + 0.99 * batch.masks * nV
+    target_V = batch.rewards + 0.96 * batch.masks * nV
 
     def expectile_fn(diff, expectile:float=0.9):
         weight = jnp.where(diff >= 0, expectile, 1-expectile)
@@ -248,9 +245,8 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
 class JointNOTAgent(PyTreeNode):
     rng: PRNGKeyArray
     net: TrainState
-    # dual_potentials_pairs: Any = None
-    # dual_potentials_elems: Any = None
-    
+
+    # CLASS FOR ONLY TRAINING JOINT EMBEDDINGS
     @classmethod
     def create(
         cls,
@@ -258,11 +254,8 @@ class JointNOTAgent(PyTreeNode):
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
         latent_dim: int = 16,
-        not_agent_elems: Any = None,
-        not_agent_pairs: Any = None,
         hidden_dims_source: Sequence[int] = (16, 16, 16, 16),
         hidden_dims_target: Sequence[int] = (32, 32, 32, 32),
-        dual_potentials=None
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1 = jax.random.split(rng, 2)
@@ -280,7 +273,6 @@ class JointNOTAgent(PyTreeNode):
             target_encoder=encoder_target,
             ema_encoder_source=copy.deepcopy(encoder_source),
             ema_encoder_target=copy.deepcopy(encoder_target),
-            #not_estimator=not_agent
         )
         params = net_def.init(key1, source_obs, target_obs)['params']
         net = TrainState.create(
@@ -307,13 +299,6 @@ class JointNOTAgent(PyTreeNode):
         encoded_target_next = net(batch_target.next_observations, method='encode_target')
         
         return encoded_source, encoded_target, encoded_source_next, encoded_target_next
-    
-    # def update_not(self, batch_source, batch_target):
-    #     encoded_source, encoded_target = JointNOTAgent.encode(self.net, batch_source, batch_target)
-    #     new_not_agent, loss, w_dist = self.neural_dual_agent.update(encoded_source, encoded_target)
-    #     potentials = new_not_agent.to_dual_potentials(finetune_g=True)
-    #     return potentials, encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
-        # return self.replace(dual_potentials=potentials, neural_dual_agent=new_not_agent), encoded_source, encoded_target, {"loss": loss, "w_dist": w_dist}
     
     @functools.partial(jax.jit, static_argnames=('update_not'))
     def update(self, source_batch, target_batch, potential_elems, potential_pairs, update_not: bool):

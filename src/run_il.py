@@ -37,7 +37,6 @@ from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.record_video import RecordVideo
 
 import ott
-from agents.notdual import W2NeuralDualCustom
 from ott.geometry import costs
 
 @functools.partial(jax.jit, static_argnums=2)
@@ -69,14 +68,14 @@ def compute_reward_from_not(not_agent, potential_pairs, obs, next_obs):
     encoded_target = jnp.concatenate(not_agent(obs, method='encode_target'))
     encoded_target_next = jnp.concatenate(not_agent(next_obs, method='encode_target'))
     f, g = potential_pairs.get_fg()
-    reward = -g(jnp.concatenate([encoded_target, encoded_target_next], axis=-1))
+    reward = -g(jnp.concatenate([encoded_target, encoded_target_next], axis=-1)) * 100
     return reward
 
 @jax.jit
 def compute_reward_from_not_elem(not_agent, potential_elems, observation):
-    encoded_source = jnp.concatenate(not_agent(observation, method='encode_target'))
+    encoded_target = jnp.concatenate(not_agent(observation, method='encode_target'))
     f, g = potential_elems.get_fg()
-    reward = -g(encoded_source) * 20
+    reward = -g(encoded_target)
     return reward
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -154,16 +153,6 @@ def collect_expert(cfg: DictConfig) -> None:
     
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
-    
-    # if cfg.use_pretrained_icvf:
-    #     print("Loading ICVF")
-    #     from orbax.checkpoint import PyTreeCheckpointer
-        
-    #     checkpointer = PyTreeCheckpointer()
-    #     restored_ckpt = checkpointer.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-04-21/15-07-38/saved_model")
-    #     value_def = create_icvf("multilinear", hidden_dims=[512, 512, 512], ensemble=True)
-    #     icvf_value = TrainState.create(value_def, params=restored_ckpt['value']['params'])
-
     if cfg.optimal_transport:
         from datasets.gc_dataset import GCSDataset
         
@@ -207,14 +196,12 @@ def collect_expert(cfg: DictConfig) -> None:
         joint_ot_agent = JointNOTAgent.create(
             cfg.seed,
             latent_dim=latent_dim,
-            not_agent_elems=not_agent_elems,
-            not_agent_pairs=not_agent_pairs,
             target_obs=target_random_buffer.observations[0],
             source_obs=combined_source_ds.observations[0],
-            dual_potentials=None
         )
+        
         #gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, **GCSDataset.get_default_config())
-        def update_not(batch_source, batch_target):
+        def update_not(joint_ot_agent, batch_source, batch_target):
             encoded_source, encoded_target, encoded_source_next, encoded_target_next = JointNOTAgent.encode(joint_ot_agent.net, batch_source, batch_target)
             
             encoded_source = jnp.concatenate(encoded_source, -1)
@@ -234,10 +221,10 @@ def collect_expert(cfg: DictConfig) -> None:
         for i in tqdm(range(1_000), desc="Pretraining NOT", position=1, leave=False):
             target_data = target_random_buffer.sample(1024, icvf=True)
             source_data = combined_source_ds.sample(1024, icvf=True)
-            potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+            potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, source_data, target_data)
 
         os.makedirs("viz_plots", exist_ok=True)
-        for i in tqdm(range(50_005), leave=True):
+        for i in tqdm(range(100_005), leave=True):
             target_data = target_random_buffer.sample(512, icvf=True)
             source_data = combined_source_ds.sample(512, icvf=True)
             if i % 2 == 0:
@@ -245,24 +232,51 @@ def collect_expert(cfg: DictConfig) -> None:
             else:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=False)
             
-            if i % 30 == 0:
+            if i % 20 == 0:
                 for _ in range(200):
                     target_data = target_random_buffer.sample(1024, icvf=True)
                     source_data = combined_source_ds.sample(1024, icvf=True)
-                    potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+                    potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, source_data, target_data)
 
-            if i % 50_000 == 1:
-                ckptr = PyTreeCheckpointer()
-                ckptr.save(
+            if i % 20_000 == 1:
+                ckptr_agent = PyTreeCheckpointer()
+                ckptr_agent.save(
                     os.getcwd() + "/saved_encoding_agent",
                     joint_ot_agent,
                     force=True,
                     save_args=orbax_utils.save_args_from_target(joint_ot_agent),
                 )
-            if i % 2010 == 0:
+                ckptr_pairs_potentials = PyTreeCheckpointer()
+                ckptr_pairs_potentials.save(
+                    os.getcwd() + "/saved_potentials_pairs/state_f",
+                    not_agent_pairs.state_f,
+                    force=True,
+                    save_args=orbax_utils.save_args_from_target(not_agent_pairs.state_f),
+                )
+                ckptr_pairs_potentials.save(
+                    os.getcwd() + "/saved_potentials_pairs/state_g",
+                    not_agent_pairs.state_g,
+                    force=True,
+                    save_args=orbax_utils.save_args_from_target(not_agent_pairs.state_g),
+                )
+                ckptr_elems_potentials = PyTreeCheckpointer()
+                ckptr_elems_potentials.save(
+                    os.getcwd() + "/saved_potentials_elems/state_f",
+                    not_agent_elems.state_f,
+                    force=True,
+                    save_args=orbax_utils.save_args_from_target(not_agent_elems.state_f),
+                )
+                ckptr_elems_potentials = PyTreeCheckpointer()
+                ckptr_elems_potentials.save(
+                    os.getcwd() + "/saved_potentials_elems/state_g",
+                    not_agent_elems.state_g,
+                    force=True,
+                    save_args=orbax_utils.save_args_from_target(not_agent_elems.state_g),
+                )
+            if i % 10_010 == 0:
                 # Target domain
                 #pca = PCA(n_components=2)
-                tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+                tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
                 
                 encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
                 encoded_target_next = joint_ot_agent.net(target_data.next_observations, method='encode_target')
@@ -281,7 +295,7 @@ def collect_expert(cfg: DictConfig) -> None:
                 #####################################################################################
                 # Source domain
                 #pca = PCA(n_components=2)
-                tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
+                tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
                 encoded_source = joint_ot_agent.net(source_data.observations, method='encode_source')
                 encoded_source_next = joint_ot_agent.net(source_data.next_observations, method='encode_source')
                 encoded_source = jnp.concatenate(encoded_source, -1)
@@ -330,17 +344,30 @@ def collect_expert(cfg: DictConfig) -> None:
         )
         ckptr_pairs_potentials = PyTreeCheckpointer()
         ckptr_pairs_potentials.save(
-            os.getcwd() + "/saved_potentials_pairs",
+            os.getcwd() + "/saved_potentials_pairs/state_f",
             not_agent_pairs.state_f,
             force=True,
             save_args=orbax_utils.save_args_from_target(not_agent_pairs.state_f),
         )
+        ckptr_pairs_potentials.save(
+            os.getcwd() + "/saved_potentials_pairs/state_g",
+            not_agent_pairs.state_g,
+            force=True,
+            save_args=orbax_utils.save_args_from_target(not_agent_pairs.state_g),
+        )
         ckptr_elems_potentials = PyTreeCheckpointer()
         ckptr_elems_potentials.save(
-            os.getcwd() + "/saved_potentials_elems",
+            os.getcwd() + "/saved_potentials_elems/state_f",
             not_agent_elems.state_f,
             force=True,
             save_args=orbax_utils.save_args_from_target(not_agent_elems.state_f),
+        )
+        ckptr_elems_potentials = PyTreeCheckpointer()
+        ckptr_elems_potentials.save(
+            os.getcwd() + "/saved_potentials_elems/state_g",
+            not_agent_elems.state_g,
+            force=True,
+            save_args=orbax_utils.save_args_from_target(not_agent_elems.state_g),
         )
     else:
         neural_f = ott.neural.networks.potentials.PotentialMLP(
@@ -383,24 +410,41 @@ def collect_expert(cfg: DictConfig) -> None:
         joint_ot_agent = JointNOTAgent.create(
             cfg.seed,
             latent_dim=latent_dim,
-            not_agent_elems=not_agent_elems,
-            not_agent_pairs=not_agent_pairs,
             target_obs=target_random_buffer.observations[0],
             source_obs=combined_source_ds.observations[0],
-            dual_potentials=None
         )
         
-        ckptr = PyTreeCheckpointer()
-        restored_ckpt_target = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_encoding_agent")
-        potential_pairs_ckpt = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_potentials_pairs")
-        potential_elems_ckpt = ckptr.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-05/23-22-17/saved_potentials_elems")
-        state_f_pairs = not_agent_pairs.state_f.replace(params=potential_pairs_ckpt['params'])
-        state_f_elems = not_agent_elems.state_f.replace(params=potential_elems_ckpt['params'])
-        not_agent_pairs.state_f = state_f_pairs
-        not_agent_elems.state_f = state_f_elems
+        checkpointer_net = PyTreeCheckpointer()
+        checkpointer_potentials_pairs_state_f = PyTreeCheckpointer()
+        checkpointer_potentials_elems_state_f = PyTreeCheckpointer()
+        checkpointer_potentials_pairs_state_g = PyTreeCheckpointer()
+        checkpointer_potentials_elems_state_g = PyTreeCheckpointer()
+
+        restored_ckpt_target = checkpointer_net.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-07/12-56-35/saved_encoding_agent")
         joint_ot_agent = joint_ot_agent.net.replace(params=restored_ckpt_target['net']['params'])
+
+        potential_pairs_state_f_ckpt = checkpointer_potentials_pairs_state_f.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-07/12-56-35/saved_potentials_pairs/state_f")
+        potential_pairs_state_g_ckpt = checkpointer_potentials_pairs_state_g.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-07/12-56-35/saved_potentials_pairs/state_g")
+
+        potential_elems_state_f_ckpt = checkpointer_potentials_elems_state_f.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-07/12-56-35/saved_potentials_elems/state_f")
+        potential_elems_state_g_ckpt = checkpointer_potentials_elems_state_g.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-07/12-56-35/saved_potentials_elems/state_g")
+
+        state_f_elems = not_agent_elems.state_f.replace(params=potential_elems_state_f_ckpt['params'])
+        state_g_elems = not_agent_elems.state_g.replace(params=potential_elems_state_g_ckpt['params'])
+
+        state_f_pairs = not_agent_pairs.state_f.replace(params=potential_pairs_state_f_ckpt['params'])
+        state_g_pairs = not_agent_pairs.state_g.replace(params=potential_pairs_state_g_ckpt['params'])
+
+        not_agent_pairs.state_f = state_f_pairs
+        not_agent_pairs.state_g = state_g_pairs
+
+        not_agent_elems.state_f = state_f_elems
+        not_agent_elems.state_g = state_g_elems
+
+        potential_pairs = not_agent_pairs.to_dual_potentials()
+        potential_elems = not_agent_elems.to_dual_potentials()
         
-        def update_not(batch_source, batch_target):
+        def update_not(joint_ot_agent, batch_source, batch_target):
             encoded_source, encoded_target, encoded_source_next, encoded_target_next = JointNOTAgent.encode(joint_ot_agent, batch_source, batch_target)
             
             encoded_source = jnp.concatenate(encoded_source, -1)
@@ -446,6 +490,17 @@ def collect_expert(cfg: DictConfig) -> None:
                     f"Training/episode length": info['episode']['l']})
             (observation, info), done = env.reset(), False
 
+        # if i % 5_001 == 0:
+        #     ## SAVE FITTED POTENTIALS
+        #     not_agent_elems.state_g
+        #     ckptr_agent = PyTreeCheckpointer()
+        #     ckptr_agent.save(
+        #         os.getcwd() + "/saved_fitted_pot_elems",
+        #         joint_ot_agent,
+        #         force=True,
+        #         save_args=orbax_utils.save_args_from_target(joint_ot_agent),
+        #     )
+        
         if i % 10_000 == 0:
             os.makedirs(name='rewards_potential', exist_ok=True)
             np.save("rewards_potential/rewards.npy", arr={
@@ -455,8 +510,9 @@ def collect_expert(cfg: DictConfig) -> None:
         if i >= cfg.algo.start_training:
             for _ in range(cfg.algo.updates_per_step):
                 target_data = target_random_buffer.sample(256)
-                source_data = combined_source_ds.sample(256)
-                potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(source_data, target_data)
+                #source_data = combined_source_ds.sample(256)
+                source_data = source_expert_ds.sample(256)
+                potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, source_data, target_data)
                 actor_update_info = agent.update(target_data)
 
         if i % cfg.log_interval == 0:
