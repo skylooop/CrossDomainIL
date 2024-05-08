@@ -176,19 +176,19 @@ def compute_source_encoder_loss_elem(net, params, batch):
         encoded_s = net(obs, params=params, method='encode_source')
         encoded_snext = net(goal, params=params, method='encode_source')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return - dist
+        return dist
     
     def get_v_ema(obs, goal):
         encoded_s = net(obs, method='encode_source_ema')
         encoded_snext = net(goal, method='encode_source_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return - dist
+        return dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
     nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
     nV = jnp.maximum(nV_1, nV_2)
-    target_V = batch.rewards + 0.96 * batch.masks * nV
+    target_V = batch.rewards + 0.99 * batch.masks * nV
 
     def expectile_fn(diff, expectile:float=0.9):
         weight = jnp.where(diff >= 0, expectile, 1-expectile)
@@ -204,19 +204,19 @@ def compute_target_encoder_loss_elem(net, params, batch):
         encoded_snext = net(goal, params=params, method='encode_target')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
         # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
-        return - dist
+        return dist
     
     def get_v_ema(obs, goal):
         encoded_s = net(obs, method='encode_target_ema')
         encoded_snext = net(goal, method='encode_target_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return -dist
+        return dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
     nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
     nV = jnp.maximum(nV_1, nV_2)
-    target_V = batch.rewards + 0.96 * batch.masks * nV
+    target_V = batch.rewards + 0.99 * batch.masks * nV
 
     def expectile_fn(diff, expectile:float=0.9):
         weight = jnp.where(diff >= 0, expectile, 1-expectile)
@@ -232,13 +232,19 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
     encoded_source_next = network(source_batch.next_observations, params=params, method='encode_source')   
     encoded_target_next = network(target_batch.next_observations, params=params, method='encode_target')
     
-    encoded_source = jnp.concatenate(encoded_source, -1)
-    encoded_target = jnp.concatenate(encoded_target, -1)
-    encoded_source_next = jnp.concatenate(encoded_source_next, -1)
-    encoded_target_next = jnp.concatenate(encoded_target_next, -1)
+    encoded_source_concated = jnp.concatenate(encoded_source, -1)
+    encoded_target_concated = jnp.concatenate(encoded_target, -1)
+    encoded_source_next_concated = jnp.concatenate(encoded_source_next, -1)
+    encoded_target_next_concated = jnp.concatenate(encoded_target_next, -1)
     
-    loss_elems = potential_elems.distance(encoded_source, encoded_target)
-    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), -1), jnp.concatenate((encoded_target, encoded_target_next), -1))
+    encoded_source_psi = encoded_source[0] # phi
+    encoded_target_phi = encoded_target[0] # phi
+    encoded_source_next_psi = encoded_source_next[0] # psi
+    encoded_target_next_phi = encoded_target_next[1] # psi
+    
+    loss_elems = potential_elems.distance(encoded_source_concated, encoded_target_concated)
+    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source_psi, encoded_source_next_psi), -1),
+                                          jnp.concatenate((encoded_target_phi, encoded_target_next_phi), -1))
     loss = loss_elems + loss_pairs
     return loss
 
@@ -253,9 +259,9 @@ class JointNOTAgent(PyTreeNode):
         seed: int,
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
-        latent_dim: int = 16,
-        hidden_dims_source: Sequence[int] = (16, 16, 16, 16),
-        hidden_dims_target: Sequence[int] = (32, 32, 32, 32),
+        latent_dim: int = 8,
+        hidden_dims_source: Sequence[int] = (8, 8, 8, 8),
+        hidden_dims_target: Sequence[int] = (16, 16, 16, 16),
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1 = jax.random.split(rng, 2)
@@ -278,8 +284,8 @@ class JointNOTAgent(PyTreeNode):
         net = TrainState.create(
             model_def=net_def,
             params=params,
-            tx=optax.multi_transform({'source_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
-                                      'target_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
+            tx=optax.multi_transform({'source_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4, eps=1e-5)),
+                                      'target_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4, eps=1e-5)),
                                       "zero": optax.set_to_zero()},
                                       param_labels={'source_encoder': "source_encoder", 'target_encoder': 'target_encoder',
                                                     'ema_encoder_source': 'zero', 'ema_encoder_target': 'zero'}

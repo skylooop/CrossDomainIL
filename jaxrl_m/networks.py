@@ -85,7 +85,7 @@ class RelativeRepresentation(nn.Module):
             rep = rep / jnp.linalg.norm(rep, axis=-1, keepdims=True) * jnp.sqrt(self.rep_dim)
 
         p = rep.shape[-1] // 2
-        return rep[..., :p], rep[..., p:]
+        return rep[..., :p], rep[..., p:] #phi psi
 
 class CrossDomainAlign(nn.Module):
     source_encoder: Type[nn.Module]
