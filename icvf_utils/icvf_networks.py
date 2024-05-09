@@ -176,13 +176,13 @@ def compute_source_encoder_loss_elem(net, params, batch):
         encoded_s = net(obs, params=params, method='encode_source')
         encoded_snext = net(goal, params=params, method='encode_source')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return dist
+        return -dist
     
     def get_v_ema(obs, goal):
         encoded_s = net(obs, method='encode_source_ema')
         encoded_snext = net(goal, method='encode_source_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return dist
+        return -dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
@@ -204,13 +204,13 @@ def compute_target_encoder_loss_elem(net, params, batch):
         encoded_snext = net(goal, params=params, method='encode_target')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
         # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
-        return dist
+        return -dist
     
     def get_v_ema(obs, goal):
         encoded_s = net(obs, method='encode_target_ema')
         encoded_snext = net(goal, method='encode_target_ema')
         dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return dist
+        return -dist
     
     V = get_v(params, batch.observations, batch.goals) # d(s, s+)
     nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
@@ -243,8 +243,10 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
     encoded_target_next_phi = encoded_target_next[1] # psi
     
     loss_elems = potential_elems.distance(encoded_source_concated, encoded_target_concated)
-    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source_psi, encoded_source_next_psi), -1),
-                                          jnp.concatenate((encoded_target_phi, encoded_target_next_phi), -1))
+    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source_concated, encoded_source_next_concated), -1),
+                                          jnp.concatenate((encoded_target_concated, encoded_target_next_concated), -1))
+    # loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source_psi, encoded_source_next_psi), -1),
+    #                                       jnp.concatenate((encoded_target_phi, encoded_target_next_phi), -1))
     loss = loss_elems + loss_pairs
     return loss
 
@@ -252,7 +254,6 @@ class JointNOTAgent(PyTreeNode):
     rng: PRNGKeyArray
     net: TrainState
 
-    # CLASS FOR ONLY TRAINING JOINT EMBEDDINGS
     @classmethod
     def create(
         cls,
@@ -260,8 +261,8 @@ class JointNOTAgent(PyTreeNode):
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
         latent_dim: int = 8,
-        hidden_dims_source: Sequence[int] = (8, 8, 8, 8),
-        hidden_dims_target: Sequence[int] = (16, 16, 16, 16),
+        hidden_dims_source: Sequence[int] = (16, 16, 16, 16),
+        hidden_dims_target: Sequence[int] = (32, 32, 32, 32),
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1 = jax.random.split(rng, 2)
