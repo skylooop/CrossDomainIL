@@ -19,6 +19,7 @@ from icvf_utils.gcdataset import GCSDataset
 from jaxrl_m.dataset import Dataset
 from icvf_utils.icvf_learner import create_learner
 from icvf_utils.icvf_networks import create_icvf
+from utils.loading_data import prepare_buffers_for_il
 
 @hydra.main(version_base='1.4', config_path=str(ROOT/"configs"), config_name="icvf")
 def main(cfg: DictConfig) -> None:
@@ -32,21 +33,21 @@ def main(cfg: DictConfig) -> None:
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
     
-    target_random = np.load(hydra.utils.get_original_cwd() + "/prep_data/pointumaze/rand_target/random_policy.npy", allow_pickle=True).item()
-    expert_source = np.load(hydra.utils.get_original_cwd() +"/prep_data/pointumaze/expert_source/trained_expert.npy", allow_pickle=True).item()
-    
-    target_random_ds = Dataset.create(observations=target_random['observations'],
-                           actions=target_random['actions'],
-                           rewards=target_random['rewards'],
-                           dones_float=target_random['dones'],
-                           masks=1.0 - target_random['dones'],
-                           next_observations=target_random['next_observations'])
-    expert_source_ds = Dataset.create(observations=expert_source['observations'],
-                           actions=expert_source['actions'],
-                           rewards=expert_source['rewards'],
-                           dones_float=expert_source['dones'],
-                           masks=1.0 - expert_source['dones'],
-                           next_observations=expert_source['next_observations'])
+    if cfg.imitation_env.name == "PointUMaze":
+        from envs.maze_envs import CustomPointUMazeSize3Env
+        env = CustomPointUMazeSize3Env()
+        eval_env = CustomPointUMazeSize3Env()
+        episode_limit = 1000
+        
+    elif cfg.imitation_env.name == "PointAntUMaze":
+        from envs.maze_envs import CustomAntUMazeSize3Env
+        episode_limit = 1000
+        env = CustomAntUMazeSize3Env()
+        eval_env = CustomAntUMazeSize3Env()
+        
+    source_expert_ds, source_random_ds, combined_source_ds, target_random_buffer = prepare_buffers_for_il(cfg=cfg,
+                                                                                                          target_obs_space=eval_env.observation_space,
+                                                                                                          target_act_space=eval_env.action_space)
     
     # Learn ICVF on agent data
     gc_dataset = GCSDataset(target_random_ds, **GCSDataset.get_default_config().to_dict())

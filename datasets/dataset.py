@@ -72,33 +72,36 @@ class Dataset:
         self.dones_float = dones_float
         self.next_observations = next_observations
         self.size = size
+        self.discount = 0.99
         
         if init_terminals:
             self.terminal_locs,  = np.nonzero(dones_float > 0)
         
-        self.p_trajgoal = 0.7
-        self.p_currgoal = 0.5
+        # FROM HILP
+        self.p_trajgoal = 0.625
+        self.p_currgoal = 0.0
+        self.p_randomgoal = 0.375
+        self.reward_scale = 1.0
+        self.reward_shift = 0.0
+        self.geom_sample = True
         
     def sample_goals(self, indx):
-        # batch_size = len(indx)
-        # # Random goals
-        # goal_indx = np.random.randint(self.size, size=batch_size)
-        # goal_indx = np.where(np.random.rand(batch_size) < 0.8, indx, goal_indx)
-        # return goal_indx
-        
         batch_size = len(indx)
         # Random goals
-        goal_indx = np.random.randint(self.size, size=batch_size)
+        goal_indx = np.random.randint(self.size - 1, size=batch_size)
         
         # Goals from the same trajectory
         final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]
             
         distance = np.random.rand(batch_size)
-        middle_goal_indx = np.round((np.minimum(indx + 1, final_state_indx) * distance + final_state_indx * (1 - distance))).astype(int)
-
-        goal_indx = np.where(np.random.rand(batch_size) < self.p_trajgoal, middle_goal_indx, goal_indx)
-        
-        # Goals at the current state
+        if self.geom_sample:
+            us = np.random.rand(batch_size)
+            middle_goal_indx = np.minimum(indx + np.ceil(np.log(1 - us) / np.log(self.discount)).astype(int), final_state_indx)
+        else:
+            middle_goal_indx = np.round((np.minimum(indx + 1, final_state_indx) * distance + final_state_indx * (1 - distance))).astype(int)
+        # sample from same trajectory
+        goal_indx = np.where(np.random.rand(batch_size) < self.p_trajgoal / (1.0 - self.p_currgoal), middle_goal_indx, goal_indx)
+        # sample uniformly from dataset
         goal_indx = np.where(np.random.rand(batch_size) < self.p_currgoal, indx, goal_indx)
         return goal_indx
         
@@ -115,12 +118,13 @@ class Dataset:
         self.terminal_locs, = np.nonzero(self.dones_float > 0)
         return self
     
-    def sample(self, batch_size: int, icvf: bool = False) -> Batch:
-        indx = np.random.randint(self.size, size=batch_size)
-        if icvf:
+    def sample(self, batch_size: int, goal_conditioned: bool = False, indx=None) -> Batch:
+        if indx is None:
+            indx = np.random.randint(self.size - 1, size=batch_size)
+        if goal_conditioned:
             goal_indx = self.sample_goals(indx)            
             success = (indx == goal_indx)
-            rewards = success.astype(float) - 1
+            rewards = success.astype(float) * self.reward_scale + self.reward_shift
             return ICVF_output(observations=self.observations[indx],
                      actions=self.actions[indx],
                      rewards=rewards,

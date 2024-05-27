@@ -2,7 +2,7 @@ import flax.jax_utils
 import flax.struct
 import flax.struct
 from jaxrl_m.typing import *
-from jaxrl_m.networks import MLP, get_latent, ensemblize, CrossDomainAlign, RelativeRepresentation
+from jaxrl_m.networks import MLP, get_latent, ensemblize, CrossDomainNetwork, RelativeRepresentation, PhiValueDomain
 
 import flax.linen as nn
 import jax
@@ -39,15 +39,6 @@ class ICVFWithEncoder(nn.Module):
         latent_g = get_latent(self.encoder, outcomes)
         latent_z = get_latent(self.encoder, intents)
         return self.vf.get_info(latent_s, latent_g, latent_z)
-
-class SimpleVF(nn.Module):
-    hidden_dims: Sequence[int]
-    
-    @nn.compact
-    def __call__(self, observations: jnp.ndarray, train=None) -> jnp.ndarray:
-        V_net = LayerNormMLP((*self.hidden_dims, 1), activate_final=False)
-        v = V_net(observations)
-        return jnp.squeeze(v, -1)
 
 def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):    
     if isinstance(icvf_cls_or_name, str):
@@ -171,80 +162,72 @@ def apply_layernorm(x):
     net_def = nn.LayerNorm(use_bias=False, use_scale=False)
     return net_def.apply({'params': {}}, x)
 
-def compute_source_encoder_loss_elem(net, params, batch):
-    def get_v(params, obs, goal):
-        encoded_s = net(obs, params=params, method='encode_source')
-        encoded_snext = net(goal, params=params, method='encode_source')
-        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return -dist
-    
-    def get_v_ema(obs, goal):
-        encoded_s = net(obs, method='encode_source_ema')
-        encoded_snext = net(goal, method='encode_source_ema')
-        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return -dist
-    
-    V = get_v(params, batch.observations, batch.goals) # d(s, s+)
-    nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
-    nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
-    nV = jnp.maximum(nV_1, nV_2)
-    target_V = batch.rewards + 0.99 * batch.masks * nV
+def expectile_loss(adv, diff, expectile=0.7):
+    weight = jnp.where(adv >= 0, expectile, (1 - expectile))
+    return weight * (diff**2)
 
-    def expectile_fn(diff, expectile:float=0.9):
-        weight = jnp.where(diff >= 0, expectile, 1-expectile)
-        return weight * diff ** 2
-    
-    diff = (target_V - V)
-    loss = expectile_fn(diff, 0.9).mean()
-    return loss, {'source_encoder_loss': loss}
+def compute_value_loss_source(agent, params, batch):
+    batch = batch._replace(rewards=batch.rewards - 1.0)
 
-def compute_target_encoder_loss_elem(net, params, batch):
-    def get_v(params, obs, goal):
-        encoded_s = net(obs, params=params, method='encode_target')
-        encoded_snext = net(goal, params=params, method='encode_target')
-        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        # dist = jnp.mean(((encoded_s[0] - encoded_snext[1]) ** 2).sum(-1))
-        return -dist
+    (next_v1, next_v2) = agent.net(batch.next_observations, batch.goals, method='ema_value_source_domain')
+    next_v = jnp.minimum(next_v1, next_v2)
+    q = batch.rewards + 0.99 * batch.masks * next_v
     
-    def get_v_ema(obs, goal):
-        encoded_s = net(obs, method='encode_target_ema')
-        encoded_snext = net(goal, method='encode_target_ema')
-        dist = jax.vmap(jnp.dot)(encoded_s[0], encoded_snext[1]) # dot cost
-        return -dist
+    (v1_t, v2_t) = agent.net(batch.observations, batch.goals, method='ema_value_source_domain')
+    v_t = (v1_t + v2_t) / 2.
+    adv = q - v_t
     
-    V = get_v(params, batch.observations, batch.goals) # d(s, s+)
-    nV_1 = get_v_ema(batch.next_observations, batch.goals) # d(s', s+)
-    nV_2 = get_v_ema(batch.next_goals, batch.observations) # d(s, s+')
-    nV = jnp.maximum(nV_1, nV_2)
-    target_V = batch.rewards + 0.99 * batch.masks * nV
+    q1 = batch.rewards + 0.99 * batch.masks * next_v1
+    q2 = batch.rewards + 0.99 * batch.masks * next_v2
+    (v1, v2) = agent.net(batch.observations, batch.goals, method='value_source_domain', params=params)
+    v = (v1 + v2) / 2.
+    value_loss1 = expectile_loss(adv, q1 - v1, 0.95).mean()
+    value_loss2 = expectile_loss(adv, q2 - v2, 0.95).mean()
+    value_loss = value_loss1 + value_loss2
+    return value_loss, {'value_source_loss': value_loss,
+                        'adv_source_mean': adv.mean()}
 
-    def expectile_fn(diff, expectile:float=0.9):
-        weight = jnp.where(diff >= 0, expectile, 1-expectile)
-        return weight * diff ** 2
+def compute_value_loss_target(agent, params, batch):
+    batch = batch._replace(rewards=batch.rewards - 1.0)
+
+    (next_v1, next_v2) = agent.net(batch.next_observations, batch.goals, method='ema_value_target_domain')
+    next_v = jnp.minimum(next_v1, next_v2)
+    q = batch.rewards + 0.99 * batch.masks * next_v
     
-    diff = (target_V - V)
-    loss = expectile_fn(diff, 0.9).mean()
-    return loss, {'target_encoder_loss': loss}
+    (v1_t, v2_t) = agent.net(batch.observations, batch.goals, method='ema_value_target_domain')
+    v_t = (v1_t + v2_t) / 2.
+    adv = q - v_t
+    
+    q1 = batch.rewards + 0.99 * batch.masks * next_v1
+    q2 = batch.rewards + 0.99 * batch.masks * next_v2
+    (v1, v2) = agent.net(batch.observations, batch.goals, method='value_target_domain', params=params)
+    v = (v1 + v2) / 2.
+    value_loss1 = expectile_loss(adv, q1 - v1, 0.95).mean()
+    value_loss2 =  expectile_loss(adv, q2 - v2, 0.95).mean()
+    value_loss = value_loss1 + value_loss2
+    return value_loss, {'value_target_loss': value_loss,
+                        'adv_target_mean': adv.mean()}
+    
 
 def compute_not_distance(network, potential_elems, potential_pairs, params, source_batch, target_batch): 
-    encoded_source = network(source_batch.observations, params=params, method='encode_source')   
-    encoded_target = network(target_batch.observations, params=params, method='encode_target')
-    encoded_source_next = network(source_batch.next_observations, params=params, method='encode_source')   
-    encoded_target_next = network(target_batch.next_observations, params=params, method='encode_target')
+    encoded_source = network(source_batch.observations, params=params, method='phi_source_domain')
+    encoded_target = network(target_batch.observations, params=params, method='phi_target_domain')
+    encoded_source_next = network(source_batch.next_observations, params=params, method='phi_source_domain')
+    encoded_target_next = network(target_batch.next_observations, params=params, method='phi_target_domain')
     
-    encoded_source_concated = jnp.concatenate(encoded_source, -1)
-    encoded_target_concated = jnp.concatenate(encoded_target, -1)
-    encoded_source_next_concated = jnp.concatenate(encoded_source_next, -1)
-    encoded_target_next_concated = jnp.concatenate(encoded_target_next, -1)
+    # encoded_source_concated = jnp.concatenate(encoded_source, -1)
+    # encoded_target_concated = jnp.concatenate(encoded_target, -1)
+    # encoded_source_next_concated = jnp.concatenate(encoded_source_next, -1)
+    # encoded_target_next_concated = jnp.concatenate(encoded_target_next, -1)
     
-    encoded_source_psi = encoded_source[0] # phi
-    encoded_target_phi = encoded_target[0] # phi
-    encoded_source_next_psi = encoded_source_next[0] # psi
-    encoded_target_next_phi = encoded_target_next[1] # psi
+    # encoded_source_psi = encoded_source[0] # phi
+    # encoded_target_phi = encoded_target[0] # phi
+    # encoded_source_next_psi = encoded_source_next[0] # psi
+    # encoded_target_next_phi = encoded_target_next[1] # psi
     
-    loss_elems = potential_elems.distance(encoded_source_concated, encoded_target_concated)
-    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source_concated, encoded_source_next_concated), -1),
-                                          jnp.concatenate((encoded_target_concated, encoded_target_next_concated), -1))
+    loss_elems = potential_elems.distance(encoded_source, encoded_target)
+    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), -1),
+                                          jnp.concatenate((encoded_target, encoded_target_next), -1))
     # loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source_psi, encoded_source_next_psi), -1),
     #                                       jnp.concatenate((encoded_target_phi, encoded_target_next_phi), -1))
     loss = loss_elems + loss_pairs
@@ -260,9 +243,9 @@ class JointNOTAgent(PyTreeNode):
         seed: int,
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
-        latent_dim: int = 8,
-        hidden_dims_source: Sequence[int] = (16, 16, 16, 16),
-        hidden_dims_target: Sequence[int] = (32, 32, 32, 32),
+        latent_dim: int = 32,
+        hidden_dims_source: Sequence[int] = (64, 64, 64), #128, 128, 128
+        hidden_dims_target: Sequence[int] = (512, 512, 512),
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1 = jax.random.split(rng, 2)
@@ -273,67 +256,74 @@ class JointNOTAgent(PyTreeNode):
         # ))
         #encoder_source = MLP(hidden_dims=hidden_dims, activate_final=True, activations=jax.nn.gelu)
         
-        encoder_source = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims_source + (latent_dim, ), bottleneck=False)
-        encoder_target = RelativeRepresentation(layer_norm=False, hidden_dims=hidden_dims_target + (latent_dim, ), bottleneck=False)
-        net_def = CrossDomainAlign(
-            source_encoder=encoder_source,
-            target_encoder=encoder_target,
-            ema_encoder_source=copy.deepcopy(encoder_source),
-            ema_encoder_target=copy.deepcopy(encoder_target),
+        # encoder_source = RelativeRepresentation(layer_norm=False, ensemble=True, hidden_dims=hidden_dims_source + (latent_dim, ), bottleneck=False)
+        # encoder_target = RelativeRepresentation(layer_norm=False, ensemble=True, hidden_dims=hidden_dims_target + (latent_dim, ), bottleneck=False)
+        # Phi acts as an encoder for state-based envs
+        value_def_source = PhiValueDomain(encoder=None, hidden_dims=hidden_dims_source, embedding_size=latent_dim, ensemble=True)
+        value_def_target = PhiValueDomain(encoder=None, hidden_dims=hidden_dims_target, embedding_size=latent_dim, ensemble=True)
+        
+        value_def = CrossDomainNetwork(
+            networks={
+                'value_source_domain': value_def_source,
+                'value_target_domain': value_def_target,
+                'ema_value_source_domain': copy.deepcopy(value_def_source),
+                'ema_value_target_domain': copy.deepcopy(value_def_target)}
         )
-        params = net_def.init(key1, source_obs, target_obs)['params']
+        params = value_def.init(key1, source_obs, source_obs, target_obs, target_obs)['params']
         net = TrainState.create(
-            model_def=net_def,
+            model_def=value_def,
             params=params,
-            tx=optax.multi_transform({'source_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4, eps=1e-5)),
-                                      'target_encoder': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4, eps=1e-5)),
+            #tx=optax.adam(learning_rate=3e-4)
+            tx=optax.multi_transform({'networks_value_source_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
+                                      'networks_value_target_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
                                       "zero": optax.set_to_zero()},
-                                      param_labels={'source_encoder': "source_encoder", 'target_encoder': 'target_encoder',
-                                                    'ema_encoder_source': 'zero', 'ema_encoder_target': 'zero'}
+                                      param_labels={'networks_value_source_domain': "networks_value_source_domain",
+                                                    'networks_value_target_domain': 'networks_value_target_domain',
+                                                    'networks_ema_value_source_domain': 'zero', 'networks_ema_value_target_domain': 'zero'}
         ))
-        params['ema_encoder_source'] = net.params['source_encoder']
-        params['ema_encoder_target'] = net.params['target_encoder']
+        params = net.params
+        params['networks_ema_value_source_domain'] = params['networks_value_source_domain']
+        params['networks_ema_value_target_domain'] = params['networks_value_target_domain']
         net = net.replace(params=params)
         return cls(rng=rng, net=net)
-    
-    @staticmethod
-    @jax.jit
-    def encode(net, batch_source, batch_target):
-        encoded_source = net(batch_source.observations, method='encode_source')
-        encoded_target = net(batch_target.observations, method='encode_target')
-        
-        encoded_source_next = net(batch_source.next_observations, method='encode_source')
-        encoded_target_next = net(batch_target.next_observations, method='encode_target')
-        
-        return encoded_source, encoded_target, encoded_source_next, encoded_target_next
     
     @functools.partial(jax.jit, static_argnames=('update_not'))
     def update(self, source_batch, target_batch, potential_elems, potential_pairs, update_not: bool):
         def loss_fn(params):
             info = {}
             
-            source_enc_loss_elem, source_enc_info = compute_source_encoder_loss_elem(self.net, params, source_batch)
-            for k, v in source_enc_info.items():
+            value_loss_source, source_value_info = compute_value_loss_source(self, params, source_batch)
+            for k, v in source_value_info.items():
                 info[f'source_enc/{k}'] = v
-            
-            target_enc_loss_elem, target_enc_info = compute_target_encoder_loss_elem(self.net, params, target_batch)
-            for k, v in target_enc_info.items():
+        
+            value_loss_target, target_value_info = compute_value_loss_target(self, params, target_batch)
+            for k, v in target_value_info.items():
                 info[f'target_enc/{k}'] = v
             
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potential_elems, potential_pairs, params, source_batch, target_batch)
-            loss = (source_enc_loss_elem + target_enc_loss_elem) + 0.2 * not_loss
+            loss = (value_loss_source + value_loss_target) + 0.1 * not_loss
             return loss, info
         
-        new_ema_params_source = optax.incremental_update(self.net.params['source_encoder'], self.net.params['ema_encoder_source'], 0.005)
-        new_ema_params_target = optax.incremental_update(self.net.params['target_encoder'], self.net.params['ema_encoder_target'], 0.005)
+        new_ema_params_source = optax.incremental_update(self.net.params['networks_value_source_domain'], self.net.params['networks_ema_value_source_domain'], 0.005)
+        new_ema_params_target = optax.incremental_update(self.net.params['networks_value_target_domain'], self.net.params['networks_ema_value_target_domain'], 0.005)
         net, info = self.net.apply_loss_fn(loss_fn=loss_fn, has_aux=True)
-        
+
         params = net.params
-        params['ema_encoder_source'] = new_ema_params_source
-        params['ema_encoder_target'] = new_ema_params_target
+        params['networks_ema_value_source_domain'] = new_ema_params_source
+        params['networks_ema_value_target_domain'] = new_ema_params_target
         new_net = net.replace(params=params)
         
         return self.replace(net=new_net), info
+    
+    @jax.jit
+    def get_phi_source(self, obs):
+        phi = self.net(obs, method='phi_source_domain')
+        return phi
+    
+    @jax.jit
+    def get_phi_target(self, obs):
+        phi = self.net(obs, method='phi_target_domain')
+        return phi
     
 icvfs = {
     'encodervf': JointNOTAgent,

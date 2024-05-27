@@ -58,8 +58,7 @@ class ReplayBuffer(Dataset):
         self.rewards[:num_samples] = dataset.rewards[indices]
         self.masks[:num_samples] = dataset.masks[indices]
         self.dones_float[:num_samples] = dataset.dones_float[indices]
-        self.next_observations[:num_samples] = dataset.next_observations[
-            indices]
+        self.next_observations[:num_samples] = dataset.next_observations[indices]
 
         self.insert_index = num_samples
         self.size = num_samples

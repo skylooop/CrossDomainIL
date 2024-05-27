@@ -109,7 +109,7 @@ class GoalRewardUMaze(MazeTask):
 
     def reward(self, obs: np.ndarray) -> float:
         # return 1.0 if self.termination(obs) else self.PENALTY
-        return 1000.0 if self.termination(obs) else self.PENALTY
+        return 1000.0 if self.termination(obs) else self.PENALTY # as in paper Domain Adaptive
 
     @staticmethod
     def create_maze() -> List[List[MazeCell]]:
@@ -121,17 +121,7 @@ class GoalRewardUMaze(MazeTask):
             [B, E, E, E, B],
             [B, B, B, B, B],
         ]
-        # return [
-        #     [B, B, B, B, B],
-        #     [B, R, E, E, B],
-        #     [B, E, E, E, B],
-        #     [B, E, E, E, B],
-        #     [B, B, B, B, B],
-        # ]
 
-
-#class DistRewardUMaze(GoalRewardUMaze, DistRewardMixIn):
-#    pass
 class DistRewardUMaze(DistRewardMixIn, GoalRewardUMaze):
     pass
 
