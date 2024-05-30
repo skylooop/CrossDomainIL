@@ -5,3 +5,4 @@ wandb
 prep_data
 saved*
 viz*
+*.pyc
