@@ -167,7 +167,7 @@ def expectile_loss(adv, diff, expectile=0.7):
     return weight * (diff**2)
 
 def compute_value_loss_source(agent, params, batch):
-    batch = batch._replace(rewards=batch.rewards - 1.0)
+    batch = batch._replace(rewards=(batch.rewards - 1.0) * 0.3)
 
     (next_v1, next_v2) = agent.net(batch.next_observations, batch.goals, method='ema_value_source_domain')
     next_v = jnp.minimum(next_v1, next_v2)
@@ -188,7 +188,7 @@ def compute_value_loss_source(agent, params, batch):
                         'adv_source_mean': adv.mean()}
 
 def compute_value_loss_target(agent, params, batch):
-    batch = batch._replace(rewards=batch.rewards - 1.0)
+    batch = batch._replace(rewards=(batch.rewards - 1.0) * 0.3) 
 
     (next_v1, next_v2) = agent.net(batch.next_observations, batch.goals, method='ema_value_target_domain')
     next_v = jnp.minimum(next_v1, next_v2)
@@ -212,8 +212,10 @@ def compute_value_loss_target(agent, params, batch):
 def compute_not_distance(network, potential_elems, potential_pairs, params, source_batch, target_batch): 
     encoded_source = network(source_batch.observations, params=params, method='phi_source_domain')
     encoded_target = network(target_batch.observations, params=params, method='phi_target_domain')
-    encoded_source_next = network(source_batch.next_observations, params=params, method='phi_source_domain')
-    encoded_target_next = network(target_batch.next_observations, params=params, method='phi_target_domain')
+    ema_encoded_source = network(source_batch.observations, method='ema_phi_source_domain')
+    ema_encoded_target = network(target_batch.observations, method='ema_phi_target_domain')
+    # encoded_source_next = network(source_batch.next_observations, params=params, method='phi_source_domain')
+    # encoded_target_next = network(target_batch.next_observations, params=params, method='phi_target_domain')
     
     # encoded_source_concated = jnp.concatenate(encoded_source, -1)
     # encoded_target_concated = jnp.concatenate(encoded_target, -1)
@@ -225,12 +227,21 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
     # encoded_source_next_psi = encoded_source_next[0] # psi
     # encoded_target_next_phi = encoded_target_next[1] # psi
     
-    loss_elems = potential_elems.distance(encoded_source, encoded_target)
-    loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), -1),
-                                          jnp.concatenate((encoded_target, encoded_target_next), -1))
+    # loss_elems = potential_elems.distance(encoded_source, encoded_target)
+    T_src = jax.lax.stop_gradient(potential_elems.transport(ema_encoded_source, forward=True))
+    T_tgt = jax.lax.stop_gradient(potential_elems.transport(ema_encoded_target, forward=False))
+    # loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), -1),
+    #                                       jnp.concatenate((encoded_target, encoded_target_next), -1))
     # loss_pairs = potential_pairs.distance(jnp.concatenate((encoded_source_psi, encoded_source_next_psi), -1),
     #                                       jnp.concatenate((encoded_target_phi, encoded_target_next_phi), -1))
-    loss = loss_elems + loss_pairs
+
+    squared_dist_target = ((T_tgt - encoded_target) ** 2).sum(axis=-1)
+    v_target = jnp.maximum(squared_dist_target, 1e-6)
+
+    squared_dist_src = ((T_src - encoded_source) ** 2).sum(axis=-1)
+    v_src = jnp.maximum(squared_dist_src, 1e-6)
+       
+    loss = v_target.mean() + v_src.mean()
     return loss
 
 class JointNOTAgent(PyTreeNode):
@@ -244,7 +255,7 @@ class JointNOTAgent(PyTreeNode):
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
         latent_dim: int = 32,
-        hidden_dims_source: Sequence[int] = (64, 64, 64), #128, 128, 128
+        hidden_dims_source: Sequence[int] = (128, 128, 128), #128, 128, 128
         hidden_dims_target: Sequence[int] = (512, 512, 512),
     ):
         rng = jax.random.PRNGKey(seed)
@@ -274,8 +285,8 @@ class JointNOTAgent(PyTreeNode):
             model_def=value_def,
             params=params,
             #tx=optax.adam(learning_rate=3e-4)
-            tx=optax.multi_transform({'networks_value_source_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
-                                      'networks_value_target_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
+            tx=optax.multi_transform({'networks_value_source_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=1e-4)),
+                                      'networks_value_target_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=1e-4)),
                                       "zero": optax.set_to_zero()},
                                       param_labels={'networks_value_source_domain': "networks_value_source_domain",
                                                     'networks_value_target_domain': 'networks_value_target_domain',
@@ -301,7 +312,7 @@ class JointNOTAgent(PyTreeNode):
                 info[f'target_enc/{k}'] = v
             
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potential_elems, potential_pairs, params, source_batch, target_batch)
-            loss = (value_loss_source + value_loss_target) + 0.1 * not_loss
+            loss = (value_loss_source + value_loss_target) + 0.0002 * not_loss
             return loss, info
         
         new_ema_params_source = optax.incremental_update(self.net.params['networks_value_source_domain'], self.net.params['networks_ema_value_source_domain'], 0.005)
@@ -316,13 +327,13 @@ class JointNOTAgent(PyTreeNode):
         return self.replace(net=new_net), info
     
     @jax.jit
-    def get_phi_source(self, obs):
-        phi = self.net(obs, method='phi_source_domain')
+    def ema_get_phi_source(self, obs):
+        phi = self.net(obs, method='ema_phi_source_domain')
         return phi
     
     @jax.jit
-    def get_phi_target(self, obs):
-        phi = self.net(obs, method='phi_target_domain')
+    def ema_get_phi_target(self, obs):
+        phi = self.net(obs, method='ema_phi_target_domain')
         return phi
     
 icvfs = {

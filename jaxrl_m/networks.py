@@ -133,6 +133,12 @@ class CrossDomainNetwork(nn.Module):
     def phi_target_domain(self, obs: jnp.ndarray):
         return self.networks['value_target_domain'].get_phi(obs)
     
+    def ema_phi_source_domain(self, obs: jnp.ndarray):
+        return self.networks['ema_value_source_domain'].get_phi(obs)
+
+    def ema_phi_target_domain(self, obs: jnp.ndarray):
+        return self.networks['ema_value_target_domain'].get_phi(obs)
+    
     @nn.compact # for init only
     def __call__(self, source_obs: jnp.ndarray, source_goals, target_obs: jnp.ndarray, target_goals) -> Dict[str, np.ndarray]:
         return {

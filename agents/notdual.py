@@ -123,6 +123,15 @@ class ENOTPotentialsCustom:
     def distance(self, x, y):
         f, g = self.get_fg()
         return (jax.vmap(f)(x) + jax.vmap(g)(y)).mean()
+    
+    def transport(self, vec, forward: bool):
+        twist_op = jax.vmap(self.cost_fn.twist_operator, in_axes=[0, 0, None])
+        grad_f = jax.vmap(self.state_f.potential_gradient_fn(self.state_f.params))
+        grad_g = jax.vmap(self.state_g.potential_gradient_fn(self.state_g.params))
+        if forward:
+            return twist_op(vec, grad_f(vec), False)
+        return twist_op(vec, grad_g(vec), True)
+
 
 
 class W2NeuralDualCustom(W2NeuralDual):

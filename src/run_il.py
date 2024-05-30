@@ -65,19 +65,18 @@ def plot_embeddings(sn, se, tn) -> None:
     plt.close()
 
 def update_not(joint_ot_agent, not_agent_elems, not_agent_pairs, batch_source, batch_target):
-    encoded_source = joint_ot_agent.get_phi_source(batch_source.observations)
-    encoded_target = joint_ot_agent.get_phi_target(batch_target.observations)
-    encoded_source_next = joint_ot_agent.get_phi_source(batch_source.next_observations)
-    encoded_target_next = joint_ot_agent.get_phi_target(batch_target.next_observations)
+    encoded_source = joint_ot_agent.ema_get_phi_source(batch_source.observations)
+    encoded_target = joint_ot_agent.ema_get_phi_target(batch_target.observations)
+    # encoded_source_next = joint_ot_agent.get_phi_source(batch_source.next_observations)
+    # encoded_target_next = joint_ot_agent.get_phi_target(batch_target.next_observations)
     
     new_not_agent_elems, loss_elems, w_dist_elems = not_agent_elems.update(encoded_source, encoded_target)
     potentials_elems = new_not_agent_elems.to_dual_potentials(finetune_g=True)
-    new_not_agent_pairs, loss_pairs, w_dist_pairs = not_agent_pairs.update(batch_source=jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-                                                            batch_target=jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+    # new_not_agent_pairs, loss_pairs, w_dist_pairs = not_agent_pairs.update(batch_source=jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+    #                                                         batch_target=jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
 
-    potentials_pairs = new_not_agent_pairs.to_dual_potentials(finetune_g=True)
-    return new_not_agent_pairs, new_not_agent_elems, potentials_elems, potentials_pairs, encoded_source, encoded_target, {"loss_elems": loss_elems, "w_dist_elems": w_dist_elems,
-                                                                                "loss_pairs": loss_pairs, "w_dist_pairs": w_dist_pairs}
+    potentials_pairs = not_agent_pairs.to_dual_potentials(finetune_g=True)
+    return not_agent_pairs, new_not_agent_elems, potentials_elems, potentials_pairs, encoded_source, encoded_target, {"loss_elems": loss_elems, "w_dist_elems": w_dist_elems}
 
 @jax.jit
 def compute_reward_from_not(not_agent, potential_pairs, obs, next_obs, expert_obs, expert_next_obs):
@@ -176,19 +175,19 @@ def collect_expert(cfg: DictConfig) -> None:
         from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP
         from ott.neural.methods import neuraldual
         
-        neural_f = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[512, 512, 512],
-            is_potential=True,
-            act_fn=jax.nn.gelu
-        )
-        neural_g = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[512, 512, 512],
-            is_potential=True,
-            act_fn=jax.nn.gelu
-        )
+        # neural_f = ott.neural.networks.potentials.PotentialMLP(
+        #     dim_hidden=[512, 512, 512],
+        #     is_potential=True,
+        #     act_fn=jax.nn.gelu
+        # )
+        # neural_g = ott.neural.networks.potentials.PotentialMLP(
+        #     dim_hidden=[512, 512, 512],
+        #     is_potential=True,
+        #     act_fn=jax.nn.gelu
+        # )
         
-        # neural_f = ExpectileMLP(dim_hidden=[32, 32, 32, 32, 16])
-        # neural_g = ExpectileMLP(dim_hidden=[32, 32, 32, 32, 1])
+        neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
+        neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
         optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
         optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
         latent_dim = 32
@@ -228,7 +227,7 @@ def collect_expert(cfg: DictConfig) -> None:
         #gc_icvf_dataset_target = GCSDataset(dataset=target_random_buffer, **GCSDataset.get_default_config())
         
         #General Pretraining
-        for i in tqdm(range(1_000), desc="Pretraining NOT", position=1, leave=False):
+        for i in tqdm(range(10_000), desc="Pretraining NOT", position=1, leave=False):
             target_data = target_random_buffer.sample(1024, goal_conditioned=True)
             source_data = combined_source_ds.sample(1024, goal_conditioned=True)
             not_agent_pairs, not_agent_elems, potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_elems, not_agent_pairs,
@@ -237,13 +236,13 @@ def collect_expert(cfg: DictConfig) -> None:
         for i in tqdm(range(300_005), leave=True):
             target_data = target_random_buffer.sample(1024, goal_conditioned=True)
             source_data = combined_source_ds.sample(1024, goal_conditioned=True)
-            if i % 2 == 0:
+            if i % 5 == 0:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=True)
             else:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=False)
             
-            if i % 20 == 0:
-                for _ in range(150):
+            if i % 10 == 0:
+                for _ in range(30):
                     target_data = target_random_buffer.sample(1024, goal_conditioned=True)
                     source_data = combined_source_ds.sample(1024, goal_conditioned=True)
                     #source_data = source_expert_ds.sample(1024, icvf=True)
@@ -289,8 +288,8 @@ def collect_expert(cfg: DictConfig) -> None:
                 #pca = PCA(n_components=2)
                 tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
                 
-                encoded_target = joint_ot_agent.get_phi_target(target_data.observations)
-                encoded_target_next = joint_ot_agent.get_phi_target(target_data.next_observations)
+                encoded_target = joint_ot_agent.ema_get_phi_target(target_data.observations)
+                # encoded_target_next = joint_ot_agent.ema_get_phi_target(target_data.next_observations)
                 # encoded_target = jnp.concatenate(encoded_target, -1)
                 # encoded_target_next = jnp.concatenate(encoded_target_next, -1)
                 
@@ -307,8 +306,8 @@ def collect_expert(cfg: DictConfig) -> None:
                 # Source domain
                 #pca = PCA(n_components=2)
                 tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
-                encoded_source = joint_ot_agent.get_phi_source(source_data.observations)
-                encoded_source_next = joint_ot_agent.get_phi_source(source_data.next_observations)
+                encoded_source = joint_ot_agent.ema_get_phi_source(source_data.observations)
+                # encoded_source_next = joint_ot_agent.get_phi_source(source_data.next_observations)
                 # encoded_source = jnp.concatenate(encoded_source, -1)
                 # encoded_source_next = jnp.concatenate(encoded_source_next, -1)
 
@@ -334,16 +333,16 @@ def collect_expert(cfg: DictConfig) -> None:
                 fig.savefig(f"viz_plots/both_{i}_tsne.png")
                 
                 neural_dual_dist_elems = potential_elems.distance(encoded_source, encoded_target)
-                neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-                                                                jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+                # neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                #                                                 jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
                 sinkhorn_dist_elems = sinkhorn_loss(encoded_source, encoded_target)
-                sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-                                                    jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+                # sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                #                                     jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
                 
                 print(f"\nNeural dual distance between elements in source and target data: {neural_dual_dist_elems:.5f}")
-                print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
+                # print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
                 print(f"Sinkhorn distance between elements in source and target data: {sinkhorn_dist_elems:.5f}")
-                print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
+                # print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
         
         ########################## SAVING ####################################      
         ckptr_agent = PyTreeCheckpointer()
