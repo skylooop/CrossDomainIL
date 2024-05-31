@@ -19,9 +19,7 @@ ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, ind
 from utils.const import SUPPORTED_ENVS
 from datasets.replay_buffer import ReplayBuffer
 
-from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
-from gymnasium.wrappers.time_limit import TimeLimit
-from gymnasium.wrappers.record_video import RecordVideo
+from gymnasium.wrappers import RecordEpisodeStatistics, TimeLimit, RecordVideo
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="expert")
 def collect_expert(cfg: DictConfig) -> None:

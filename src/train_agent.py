@@ -33,11 +33,8 @@ from utils.loading_data import prepare_buffers_for_il
 from agents.notdual import ENOTCustom, W2NeuralDualCustom
 from icvf_utils.icvf_networks import JointNOTAgent
 
-from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
-from gymnasium.wrappers.time_limit import TimeLimit
-from gymnasium.wrappers.record_video import RecordVideo
+from gymnasium.wrappers import RecordEpisodeStatistics, TimeLimit, RecordVideo
 
-import ott
 from ott.geometry import costs
 
 @functools.partial(jax.jit, static_argnums=2)

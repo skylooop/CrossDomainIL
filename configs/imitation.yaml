@@ -4,7 +4,6 @@ defaults:
   - _self_
   - imitation_env: pointantumaze #pointantumaze # pointumaze
   - algo: sac
-  - logger: wandb
 
 seed: 42
 max_steps: 1_000_000
@@ -15,4 +14,3 @@ save_expert_episodes: 20
 save_video_each_ep: 19
 
 optimal_transport: True # True
-train_expert: False

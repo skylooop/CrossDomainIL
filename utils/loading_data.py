@@ -1,20 +1,12 @@
 import numpy as np
 from datasets.replay_buffer import ReplayBuffer, Dataset
 
-def prepare_buffers_for_il(cfg, target_obs_space, target_act_space, custom_npy: bool=True,
-                           clip_to_eps:bool = True, eps:float=1e-5, target_antmaze:bool=True):
-    #if target env antmaze -> set to true
+def prepare_buffers_for_il(cfg, custom_npy: bool=True, target_antmaze: bool=True):
     
     if custom_npy:
         expert_source = np.load(cfg.imitation_env.path_to_expert, allow_pickle=True).item()
         expert_random = np.load(cfg.imitation_env.path_to_random_expert, allow_pickle=True).item()
         target_random = np.load(cfg.imitation_env.path_to_random_target, allow_pickle=True).item()
-        
-        if clip_to_eps:
-            lim = 1 - eps
-            expert_source['actions'] = np.clip(expert_source['actions'], -lim, lim)
-            expert_random['actions'] = np.clip(expert_random['actions'], -lim, lim)
-            target_random['actions'] = np.clip(target_random['actions'], -lim, lim)
         
         if target_antmaze:
             dones_float = np.zeros_like(target_random['rewards'])
@@ -70,6 +62,4 @@ def prepare_buffers_for_il(cfg, target_obs_space, target_act_space, custom_npy: 
                             next_observations=target_random['next_observations'],
                             size=target_random['observations'].shape[0])
         
-        target_random_buffer = ReplayBuffer(observation_space=target_obs_space, action_space=target_act_space, capacity=cfg.algo.buffer_size)
-        target_random_buffer.initialize_with_dataset(target_dataset_random)
-        return expert_source_ds, non_expert_source_dataset, combined_source_ds, target_random_buffer
+        return expert_source_ds, non_expert_source_dataset, combined_source_ds, target_dataset_random

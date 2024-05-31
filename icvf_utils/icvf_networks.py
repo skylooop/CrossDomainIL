@@ -74,81 +74,7 @@ class ICVFTemplate(nn.Module):
     def __call__(self, observations: jnp.ndarray, outcomes: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         # Returns V(s, g, z)
         raise NotImplementedError
-
-class MonolithicVF(nn.Module):
-    hidden_dims: Sequence[int]
-    use_layer_norm: bool = False
-
-    def setup(self):
-        network_cls = LayerNormMLP if self.use_layer_norm else MLP
-        self.net = network_cls((*self.hidden_dims, 1), activate_final=False)
-
-    def get_info(self, observations: jnp.ndarray, outcomes: jnp.ndarray, z: jnp.ndarray) -> Dict[str, jnp.ndarray]:
-        x = jnp.concatenate([observations, outcomes, z], axis=-1)
-        v = self.net(x)
-        return {
-            'v': jnp.squeeze(v, -1),
-            'psi': outcomes,
-            'z': z,
-            'phi': observations,
-        }
-    
-    def get_phi(self, observations):
-        print('Warning: StandardVF does not define a state representation phi(s). Returning phi(s) = s')
-        return observations
-    
-    def __call__(self, observations: jnp.ndarray, outcomes: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
-        x = jnp.concatenate([observations, outcomes, z], axis=-1)
-        v = self.net(x)
-        return jnp.squeeze(v, -1)
-
-class MultilinearVF(nn.Module):
-    hidden_dims: Sequence[int]
-    use_layer_norm: bool = False
-
-    def setup(self):
-        network_cls = LayerNormMLP if self.use_layer_norm else MLP
-        self.phi_net = network_cls(self.hidden_dims, activate_final=True, name='phi')
-        self.psi_net = network_cls(self.hidden_dims, activate_final=True, name='psi')
-
-        self.T_net =  network_cls(self.hidden_dims, activate_final=True, name='T')
-
-        self.matrix_a = nn.Dense(self.hidden_dims[-1], name='matrix_a')
-        self.matrix_b = nn.Dense(self.hidden_dims[-1], name='matrix_b')
-        
-    def __call__(self, observations: jnp.ndarray, outcomes: jnp.ndarray, intents: jnp.ndarray) -> jnp.ndarray:
-        return self.get_info(observations, outcomes, intents)['v']
-        
-    def get_psi(self, observations):
-        return self.psi_nety(observations)
-    
-    def get_phi(self, observations):
-        return self.phi_net(observations)
-
-    def get_info(self, observations: jnp.ndarray, outcomes: jnp.ndarray, intents: jnp.ndarray) -> Dict[str, jnp.ndarray]:
-        phi = self.phi_net(observations)
-        psi = self.psi_net(outcomes)
-        z = self.psi_net(intents)
-        Tz = self.T_net(z)
-
-        # T(z) should be a dxd matrix, but having a network output d^2 parameters is inefficient
-        # So we'll make a low-rank approximation to T(z) = (diag(Tz) * A * B * diag(Tz))
-        # where A and B are (fixed) dxd matrices and Tz is a d-dimensional parameter dependent on z
-
-        phi_z = self.matrix_a(Tz * phi)
-        psi_z = self.matrix_b(Tz * psi)
-        v = (phi_z * psi_z).sum(axis=-1)
-
-        return {
-            'v': v,
-            'phi': phi,
-            'psi': psi,
-            'Tz': Tz,
-            'z': z,
-            'phi_z': phi_z,
-            'psi_z': psi_z,
-        }
-        
+   
 class FourierMLP(nn.Module):
     fourier_net: nn.Module
     mlp: nn.Module
@@ -162,7 +88,7 @@ def apply_layernorm(x):
     net_def = nn.LayerNorm(use_bias=False, use_scale=False)
     return net_def.apply({'params': {}}, x)
 
-def expectile_loss(adv, diff, expectile=0.7):
+def expectile_loss(adv, diff, expectile=0.9):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * (diff**2)
 
@@ -180,9 +106,9 @@ def compute_value_loss_source(agent, params, batch):
     q1 = batch.rewards + 0.99 * batch.masks * next_v1
     q2 = batch.rewards + 0.99 * batch.masks * next_v2
     (v1, v2) = agent.net(batch.observations, batch.goals, method='value_source_domain', params=params)
-    v = (v1 + v2) / 2.
-    value_loss1 = expectile_loss(adv, q1 - v1, 0.95).mean()
-    value_loss2 = expectile_loss(adv, q2 - v2, 0.95).mean()
+
+    value_loss1 = expectile_loss(adv, q1 - v1, 0.9).mean()
+    value_loss2 = expectile_loss(adv, q2 - v2, 0.9).mean()
     value_loss = value_loss1 + value_loss2
     return value_loss, {'value_source_loss': value_loss,
                         'adv_source_mean': adv.mean()}
@@ -202,8 +128,8 @@ def compute_value_loss_target(agent, params, batch):
     q2 = batch.rewards + 0.99 * batch.masks * next_v2
     (v1, v2) = agent.net(batch.observations, batch.goals, method='value_target_domain', params=params)
     v = (v1 + v2) / 2.
-    value_loss1 = expectile_loss(adv, q1 - v1, 0.95).mean()
-    value_loss2 =  expectile_loss(adv, q2 - v2, 0.95).mean()
+    value_loss1 = expectile_loss(adv, q1 - v1, 0.9).mean()
+    value_loss2 =  expectile_loss(adv, q2 - v2, 0.9).mean()
     value_loss = value_loss1 + value_loss2
     return value_loss, {'value_target_loss': value_loss,
                         'adv_target_mean': adv.mean()}
@@ -224,8 +150,8 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
     squared_dist_src = ((T_src - encoded_source) ** 2).sum(axis=-1)
     v_src = jnp.maximum(squared_dist_src, 1e-6)
        
-    loss = v_target.mean() + v_src.mean()
-    return loss
+    loss = v_target + v_src
+    return loss.mean()
 
 class JointNOTAgent(PyTreeNode):
     rng: PRNGKeyArray
@@ -238,7 +164,7 @@ class JointNOTAgent(PyTreeNode):
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
         latent_dim: int = 32,
-        hidden_dims_source: Sequence[int] = (128, 128, 128), #128, 128, 128
+        hidden_dims_source: Sequence[int] = (256, 256, 256), #128, 128, 128
         hidden_dims_target: Sequence[int] = (512, 512, 512),
     ):
         rng = jax.random.PRNGKey(seed)
@@ -268,8 +194,8 @@ class JointNOTAgent(PyTreeNode):
             model_def=value_def,
             params=params,
             #tx=optax.adam(learning_rate=3e-4)
-            tx=optax.multi_transform({'networks_value_source_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=1e-4)),
-                                      'networks_value_target_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=1e-4)),
+            tx=optax.multi_transform({'networks_value_source_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
+                                      'networks_value_target_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
                                       "zero": optax.set_to_zero()},
                                       param_labels={'networks_value_source_domain': "networks_value_source_domain",
                                                     'networks_value_target_domain': 'networks_value_target_domain',
@@ -295,7 +221,7 @@ class JointNOTAgent(PyTreeNode):
                 info[f'target_enc/{k}'] = v
             
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potential_elems, potential_pairs, params, source_batch, target_batch)
-            loss = (value_loss_source + value_loss_target) + 0.01 * not_loss
+            loss = (value_loss_source + value_loss_target) + 0.05 * not_loss
             return loss, info
         
         new_ema_params_source = optax.incremental_update(self.net.params['networks_value_source_domain'], self.net.params['networks_ema_value_source_domain'], 0.005)
@@ -321,6 +247,4 @@ class JointNOTAgent(PyTreeNode):
     
 icvfs = {
     'encodervf': JointNOTAgent,
-    'multilinear': MultilinearVF,
-    'monolithic': MonolithicVF,
 }

@@ -4,7 +4,6 @@ defaults:
   - _self_
   - env: pointantumaze #pointantumaze # pointumaze
   - algo: sac
-  - logger: wandb
 
 seed: 1488
 max_steps: 100_000
