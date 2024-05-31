@@ -175,17 +175,6 @@ def collect_expert(cfg: DictConfig) -> None:
         from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP
         from ott.neural.methods import neuraldual
         
-        # neural_f = ott.neural.networks.potentials.PotentialMLP(
-        #     dim_hidden=[512, 512, 512],
-        #     is_potential=True,
-        #     act_fn=jax.nn.gelu
-        # )
-        # neural_g = ott.neural.networks.potentials.PotentialMLP(
-        #     dim_hidden=[512, 512, 512],
-        #     is_potential=True,
-        #     act_fn=jax.nn.gelu
-        # )
-        
         neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
         neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
         optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
@@ -241,7 +230,7 @@ def collect_expert(cfg: DictConfig) -> None:
             else:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=False)
             
-            if i % 10 == 0:
+            if i % 5 == 0:
                 for _ in range(30):
                     target_data = target_random_buffer.sample(1024, goal_conditioned=True)
                     source_data = combined_source_ds.sample(1024, goal_conditioned=True)
@@ -284,6 +273,17 @@ def collect_expert(cfg: DictConfig) -> None:
                     save_args=orbax_utils.save_args_from_target(not_agent_elems.state_g),
                 )
             if i % 5_010 == 0:
+
+                def SetColor(x, y):
+                    if(x < 6 and y < 2):
+                        return "green"
+                    elif(x >= 6 or (y >=1.5 and y < 4.5)):
+                        return "red"
+                    elif ( x<6.5 and y>4):
+                        return "purple"
+                    
+                colormap_target = list(map(SetColor, target_data.observations[:, 0], target_data.observations[:, 1]))
+                colormap_source = list(map(SetColor, source_data.observations[:, 0], source_data.observations[:, 1]))
                 # Target domain
                 #pca = PCA(n_components=2)
                 tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
@@ -299,7 +299,7 @@ def collect_expert(cfg: DictConfig) -> None:
                 # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
                 # fig.savefig(f"viz_plots/target_{i}_pca.png")
                 fig, ax = plt.subplots()
-                ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+                ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne", c=colormap_target)
                 fig.savefig(f"viz_plots/target_{i}_tsne.png")
                 
                 #####################################################################################
@@ -319,7 +319,7 @@ def collect_expert(cfg: DictConfig) -> None:
                 # fig.savefig(f"viz_plots/source_{i}_pca.png")
 
                 fig, ax = plt.subplots()
-                ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
+                ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne", c=colormap_source)
                 fig.savefig(f"viz_plots/source_{i}_tsne.png")
                 
                 ############################
@@ -379,233 +379,8 @@ def collect_expert(cfg: DictConfig) -> None:
             force=True,
             save_args=orbax_utils.save_args_from_target(not_agent_elems.state_g),
         )
-    else:
-        neural_f = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[64, 64, 64, 64],
-            is_potential=True,
-            act_fn=jax.nn.elu
-        )
-        neural_g = ott.neural.networks.potentials.PotentialMLP(
-            dim_hidden=[64, 64, 64, 64],
-            is_potential=True,
-            act_fn=jax.nn.elu
-        )
-        
-        optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
-        optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
-        latent_dim = 16
-        
-        not_agent_elems = ENOTCustom(
-            dim_data=latent_dim, 
-            neural_f=neural_f,
-            neural_g=neural_g,
-            optimizer_f=optimizer_f,
-            optimizer_g=optimizer_g,
-            cost_fn=costs.SqEuclidean(),
-            expectile = 0.99,
-            expectile_loss_coef = 0.5, # 0.4
-            num_train_iters=10_000
-        )
-        not_agent_pairs = ENOTCustom(
-            dim_data=latent_dim * 2, 
-            neural_f=neural_f,
-            neural_g=neural_g,
-            optimizer_f=optimizer_f,
-            optimizer_g=optimizer_g,
-            cost_fn=costs.SqEuclidean(),
-            expectile = 0.99,
-            expectile_loss_coef = 0.5, # 0.4
-            num_train_iters=10_000
-        )
-        joint_ot_agent = JointNOTAgent.create(
-            cfg.seed,
-            latent_dim=latent_dim,
-            target_obs=target_random_buffer.observations[0],
-            source_obs=combined_source_ds.observations[0],
-        )
-        
-        checkpointer_net = PyTreeCheckpointer()
-        checkpointer_potentials_pairs_state_f = PyTreeCheckpointer()
-        checkpointer_potentials_elems_state_f = PyTreeCheckpointer()
-        checkpointer_potentials_pairs_state_g = PyTreeCheckpointer()
-        checkpointer_potentials_elems_state_g = PyTreeCheckpointer()
-
-        restored_ckpt_target = checkpointer_net.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-09/00-17-21/saved_encoding_agent")
-        net = joint_ot_agent.net.replace(params=restored_ckpt_target['net']['params'])
-        joint_ot_agent = joint_ot_agent.replace(net=net)
-
-        potential_pairs_state_f_ckpt = checkpointer_potentials_pairs_state_f.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-09/00-17-21/saved_potentials_pairs/state_f")
-        potential_pairs_state_g_ckpt = checkpointer_potentials_pairs_state_g.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-09/00-17-21/saved_potentials_pairs/state_g")
-
-        potential_elems_state_f_ckpt = checkpointer_potentials_elems_state_f.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-09/00-17-21/saved_potentials_elems/state_f")
-        potential_elems_state_g_ckpt = checkpointer_potentials_elems_state_g.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-09/00-17-21/saved_potentials_elems/state_g")
-
-        state_f_elems = not_agent_elems.state_f.replace(params=potential_elems_state_f_ckpt['params'])
-        state_g_elems = not_agent_elems.state_g.replace(params=potential_elems_state_g_ckpt['params'])
-
-        state_f_pairs = not_agent_pairs.state_f.replace(params=potential_pairs_state_f_ckpt['params'])
-        state_g_pairs = not_agent_pairs.state_g.replace(params=potential_pairs_state_g_ckpt['params'])
-
-        not_agent_pairs.state_f = state_f_pairs
-        not_agent_pairs.state_g = state_g_pairs
-
-        not_agent_elems.state_f = state_f_elems
-        not_agent_elems.state_g = state_g_elems
-
-        potential_pairs = not_agent_pairs.to_dual_potentials()
-        potential_elems = not_agent_elems.to_dual_potentials()
     
-    (observation, info), done = env.reset(seed=cfg.seed), False
     
-    potential_pairs = not_agent_pairs.to_dual_potentials()
-    potential_elems = not_agent_elems.to_dual_potentials()
-    os.makedirs("viz_plots", exist_ok=True)
-    
-    pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
-    expert_data = source_expert_ds.sample(256)
-    for i in pbar:
-        if i < cfg.algo.start_training:
-            action = env.action_space.sample()
-        else:
-            action = agent.sample_actions(observation)
-        next_observation, _, terminated, truncated, info = env.step(action) # reward
-        done = terminated or truncated
-        
-        if not done:
-            mask = 1.0
-        else:
-            mask = 0.
-        reward = compute_reward_from_not(joint_ot_agent.net, potential_pairs, observation, next_observation,
-                                         expert_data.observations, expert_data.next_observations)
-        #reward = compute_reward_from_not_elem(joint_ot_agent.net, potential_elems, observation)
-        
-        target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
-        observation = next_observation
-        if (observation[0] < 2 and observation[1] > 4) or terminated:
-            print(f"YES: {terminated}")
-            
-        if done:
-            wandb.log({f"Training/rewards": info['episode']['r'],
-                    f"Training/episode length": info['episode']['l']})
-            (observation, info), done = env.reset(), False
-            
-        if i % 1_000 == 0 or i == 0:
-            os.makedirs(name='rewards_potential', exist_ok=True)
-            np.save("rewards_potential/rewards.npy", arr={
-                'rewards': target_random_buffer.rewards,
-            })
-
-            ckptr_agent = PyTreeCheckpointer()
-            ckptr_agent.save(
-                os.getcwd() + "/saved_finetuned_g",
-                potential_pairs.state_g,
-                force=True,
-                save_args=orbax_utils.save_args_from_target(potential_pairs.state_g),
-            )
-            
-        if i >= cfg.algo.start_training:
-            for _ in range(cfg.algo.updates_per_step):
-                target_data = target_random_buffer.sample(256)
-                #source_data = combined_source_ds.sample(256)
-                expert_data = source_expert_ds.sample(256)
-                not_agent_pairs, not_agent_elems, potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_elems, not_agent_pairs,
-                                                                                                        expert_data, target_data)
-                actor_update_info = agent.update(target_data)
-
-        if i % cfg.log_interval == 0:
-            wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],
-                    f"Training/Actor loss": actor_update_info['actor_loss'],
-                    f"Training/Entropy": actor_update_info['entropy'],
-                    f"Training/Temperature": actor_update_info['temperature'],
-                    f"Training/Temp loss": actor_update_info['temp_loss']})
-            #pca = PCA(n_components=2)
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-                
-            encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
-            encoded_target_next = joint_ot_agent.net(target_data.next_observations, method='encode_target')
-            encoded_target = jnp.concatenate(encoded_target, -1)
-            encoded_target_next = jnp.concatenate(encoded_target_next, -1)
-            
-            #fitted_pca = pca.fit_transform(encoded_target)
-            fitted_tsne = tsne.fit_transform(encoded_target)
-            fig, ax = plt.subplots()
-            # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-            # fig.savefig(f"viz_plots/target_{i}_pca.png")
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-            fig.savefig(f"viz_plots/target_{i}_tsne.png")
-            
-            #####################################################################################
-            # Source domain
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_source = joint_ot_agent.net(expert_data.observations, method='encode_source')
-            encoded_source_next = joint_ot_agent.net(expert_data.next_observations, method='encode_source')
-            encoded_source = jnp.concatenate(encoded_source, -1)
-            encoded_source_next = jnp.concatenate(encoded_source_next, -1)
-
-            fitted_tsne = tsne.fit_transform(encoded_source)
-
-            # fig, ax = plt.subplots()
-            # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-            # fig.savefig(f"viz_plots/source_{i}_pca.png")
-
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-            fig.savefig(f"viz_plots/source_{i}_tsne.png")
-            
-            ############################
-            # BOTH
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
-            both_domains = np.concatenate([encoded_target, encoded_source], axis=0)
-            tsne_both = tsne.fit_transform(both_domains)
-            
-            fig, ax = plt.subplots()
-            ax.scatter(tsne_both[:, 0], tsne_both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
-            fig.savefig(f"viz_plots/both_{i}_tsne.png")
-            
-            neural_dual_dist_elems = potential_elems.distance(encoded_source, encoded_target)
-            # neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-            #                                                 jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
-            sinkhorn_dist_elems = sinkhorn_loss(encoded_source, encoded_target)
-            # sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-            #                                     jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
-            
-            print(f"\nNeural dual distance between elements in source and target data: {neural_dual_dist_elems:.5f}")
-            #print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
-            print(f"Sinkhorn distance between elements in source and target data: {sinkhorn_dist_elems:.5f}")
-            #print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
-                
-        if i % cfg.eval_interval == 0:
-            eval_stats = evaluate(agent, eval_env, cfg.eval_episodes)
-            print(eval_stats)
-            wandb.log({"Evaluation/rewards": eval_stats['r'],
-                    "Evaluation/length": eval_stats['l']})
-    
-def evaluate(agent, env, num_episodes: int):
-    stats = {'r': [], 'l': [], 't': []}
-    successes = None
-    
-    for _ in tqdm(range(num_episodes), desc="Evaluating agent.."):
-        (observation, info), done = env.reset(), False
-        while not done:
-            action = agent.sample_actions(observation, temperature=0.0)
-            observation, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            
-        for k in stats.keys():
-            stats[k].append(info['episode'][k])
-
-        if 'is_success' in info:
-            if successes is None:
-                successes = 0.0
-            successes += info['is_success']
-    for k, v in stats.items():
-        stats[k] = np.mean(v)
-
-    if successes is not None:
-        stats['success'] = successes / num_episodes
-    return stats
-
 if __name__ == "__main__":
     try:
         collect_expert()

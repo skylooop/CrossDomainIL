@@ -1,4 +1,4 @@
 name: PointAntUMaze
-path_to_expert: /home/m_bobrin/CrossDomainIL/prep_data/pointumaze/expert_source/trained_expert.npy
-path_to_random_expert: /home/m_bobrin/CrossDomainIL/prep_data/pointumaze/rand_source/random_policy.npy
-path_to_random_target: /home/m_bobrin/CrossDomainIL/prep_data/pointumaze/rand_target/random_policy.npy
+path_to_expert: /home/m_bobrin/CrossDomainIL_mine/prep_data/pointumaze/expert_source/trained_expert.npy
+path_to_random_expert: /home/m_bobrin/CrossDomainIL_mine/prep_data/pointumaze/rand_source/random_policy.npy
+path_to_random_target: /home/m_bobrin/CrossDomainIL_mine/prep_data/pointumaze/rand_target/random_policy.npy
