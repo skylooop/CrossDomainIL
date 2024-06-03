@@ -89,7 +89,7 @@ class Dataset:
         batch_size = len(indx)
         # Random goals
         goal_indx = np.random.randint(self.size - 1, size=batch_size)
-        
+
         # Goals from the same trajectory
         final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]
             
@@ -108,7 +108,7 @@ class Dataset:
     def add_data(self, observations: np.ndarray, actions: np.ndarray,
                  rewards: np.ndarray, masks: np.ndarray,
                  dones_float: np.ndarray, next_observations: np.ndarray):
-        self.size += len(observations)
+        self.size += len(observations) - 1
         self.observations = np.concatenate([self.observations, observations], axis=0)
         self.actions = np.concatenate([self.actions, actions], axis=0)
         self.rewards = np.concatenate([self.rewards, rewards], axis=0)

@@ -108,10 +108,10 @@ def collect_expert(cfg: DictConfig) -> None:
     if cfg.optimal_transport:
         from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP
         
-        neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
-        neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
-        optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
-        optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+        neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.leaky_relu)
+        neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.leaky_relu)
+        optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
+        optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
         latent_dim = 32
         
         not_agent_elems = ENOTCustom(
@@ -121,7 +121,7 @@ def collect_expert(cfg: DictConfig) -> None:
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
             cost_fn=costs.SqEuclidean(),
-            expectile = 0.99,
+            expectile = 0.95,
             expectile_loss_coef = 0.5, # 0.4
             use_dot_product=False,
             is_bidirectional=True
@@ -133,7 +133,7 @@ def collect_expert(cfg: DictConfig) -> None:
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
             cost_fn=costs.SqEuclidean(),
-            expectile = 0.99,
+            expectile = 0.95,
             expectile_loss_coef = 0.5, # 0.4
             use_dot_product=False,
             is_bidirectional=True
@@ -146,27 +146,29 @@ def collect_expert(cfg: DictConfig) -> None:
         )
         
         #General Pretraining
-        for i in tqdm(range(10_000), desc="Pretraining NOT", position=0, leave=False):
+        for i in tqdm(range(2_000), desc="Pretraining NOT", position=0, leave=False):
             target_data = target_random_ds.sample(1024, goal_conditioned=True)
             source_data = combined_source_ds.sample(1024, goal_conditioned=True)
             not_agent_pairs, not_agent_elems, potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_elems, not_agent_pairs,
                                                                                                     source_data, target_data)
         max_steps = 300_005
         os.makedirs("viz_plots", exist_ok=True)
+        
         for i in tqdm(range(max_steps), leave=True):
             target_data = target_random_ds.sample(1024, goal_conditioned=True)
             source_data = combined_source_ds.sample(1024, goal_conditioned=True)
-            if i % 5 == 0 and i > 10_000:
+            if i % 10 == 0:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=True)
             else:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=False)
             
-            if i % 5 == 0:
+            if i % 10 == 0:
                 for _ in range(30):
                     target_data = target_random_ds.sample(1024, goal_conditioned=True)
                     source_data = combined_source_ds.sample(1024, goal_conditioned=True)
                     not_agent_pairs, not_agent_elems, potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_elems, not_agent_pairs, 
                                                                                                             source_data, target_data)
+            
             if i % 5_000 == 1 or i == (max_steps - 1):
                 ckptr_agent = PyTreeCheckpointer()
                 ckptr_agent.save(

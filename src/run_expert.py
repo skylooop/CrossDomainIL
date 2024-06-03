@@ -35,7 +35,6 @@ def collect_expert(cfg: DictConfig) -> None:
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
         mode='offline',
-        project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.env.name}_{cfg.algo.name}",
     )
@@ -89,7 +88,7 @@ def collect_expert(cfg: DictConfig) -> None:
     
     eval_env = TimeLimit(eval_env, max_episode_steps=episode_limit)
     eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: (x + 1) % cfg.save_video_each_ep == 0)
-    eval_env = RecordEpisodeStatistics(eval_env, deque_size=cfg.save_expert_episodes)
+    eval_env = RecordEpisodeStatistics(eval_env, buffer_length=cfg.save_expert_episodes)
     
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
@@ -137,17 +136,18 @@ def collect_expert(cfg: DictConfig) -> None:
                 wandb.log({"Evaluation/rewards": eval_stats['r'],
                         "Evaluation/length": eval_stats['l']})
                 
-        save_expert(expert_agent, eval_env, cfg.save_expert_episodes, visual=False)
+        save_expert(expert_agent, eval_env, cfg.max_timesteps, visual=False)
         
     print(f"Saving random policy")
-    save_random_policy(eval_env, 15, visual=False)
+    save_random_policy(eval_env, cfg.max_timesteps, visual=False)
     
-def save_random_policy(env, n_episodes, visual):
+def save_random_policy(env, num_timesteps, visual):
     obs, nobs, rews, acts, dones, viz_obs = [], [], [], [], [], []
     
-    for _ in tqdm(range(n_episodes), desc="Running random policy..."):
+    #for _ in tqdm(range(n_episodes), desc="Running random policy..."):
+    while len(obs) < num_timesteps:
         (observation, info), done = env.reset(), False
-        while not done:
+        while not done and len(obs) < num_timesteps:
             action = env.action_space.sample()
             obs.append(observation)
             acts.append(action)
@@ -178,14 +178,15 @@ def save_random_policy(env, n_episodes, visual):
     })
     
     
-def save_expert(agent, env, num_episodes: int, visual: bool = False):
+def save_expert(agent, env, num_steps: int, visual: bool = False):
     stats = {'r': [], 'l': [], 't': []}
-    successes = None
     obs, nobs, rews, acts, dones, viz_obs = [], [], [], [], [], []
     
-    for _ in tqdm(range(num_episodes), desc="Running trained expert..."):
+    #for _ in tqdm(range(num_episodes), desc="Running trained expert..."):
+    while len(obs) < num_steps:
         (observation, info), done = env.reset(), False
-        while not done:
+        
+        while not done and len(obs) < num_steps:
             action = agent.sample_actions(observation, temperature=0.0)
             obs.append(observation)
             acts.append(action)
@@ -194,16 +195,9 @@ def save_expert(agent, env, num_episodes: int, visual: bool = False):
             nobs.append(observation)
             rews.append(reward)
             dones.append(done)
-            
             if visual:
                 viz_obs.append(env.get_ims())
-        for k in stats.keys():
-            stats[k].append(info['episode'][k])
-
-        if 'is_success' in info:
-            if successes is None:
-                successes = 0.0
-            successes += info['is_success']
+            
     env.close()       
     obs = np.stack(obs)
     nobs = np.stack(nobs)
@@ -213,9 +207,7 @@ def save_expert(agent, env, num_episodes: int, visual: bool = False):
     
     for k, v in stats.items():
         stats[k] = np.mean(v)
-
-    if successes is not None:
-        stats['success'] = successes / num_episodes
+        
     os.makedirs(name='saved_expert')
     np.save("saved_expert/trained_expert.npy", arr={
         'observations': obs,

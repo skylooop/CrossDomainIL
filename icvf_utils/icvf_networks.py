@@ -93,7 +93,7 @@ def expectile_loss(adv, diff, expectile=0.9):
     return weight * (diff**2)
 
 def compute_value_loss_source(agent, params, batch):
-    batch = batch._replace(rewards=(batch.rewards - 1.0) * 0.1)
+    batch = batch._replace(rewards=(batch.rewards - 1.0) * 0.1) # 
 
     (next_v1, next_v2) = agent.net(batch.next_observations, batch.goals, method='ema_value_source_domain')
     next_v = jnp.minimum(next_v1, next_v2)
@@ -114,7 +114,7 @@ def compute_value_loss_source(agent, params, batch):
                         'adv_source_mean': adv.mean()}
 
 def compute_value_loss_target(agent, params, batch):
-    batch = batch._replace(rewards=(batch.rewards - 1.0) * 0.1) 
+    batch = batch._replace(rewards=(batch.rewards - 1.0) * 0.1)  # 
 
     (next_v1, next_v2) = agent.net(batch.next_observations, batch.goals, method='ema_value_target_domain')
     next_v = jnp.minimum(next_v1, next_v2)
@@ -127,7 +127,6 @@ def compute_value_loss_target(agent, params, batch):
     q1 = batch.rewards + 0.99 * batch.masks * next_v1
     q2 = batch.rewards + 0.99 * batch.masks * next_v2
     (v1, v2) = agent.net(batch.observations, batch.goals, method='value_target_domain', params=params)
-    v = (v1 + v2) / 2.
     value_loss1 = expectile_loss(adv, q1 - v1, 0.9).mean()
     value_loss2 =  expectile_loss(adv, q2 - v2, 0.9).mean()
     value_loss = value_loss1 + value_loss2
@@ -141,13 +140,13 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
     ema_encoded_source = network(source_batch.observations, method='ema_phi_source_domain')
     ema_encoded_target = network(target_batch.observations, method='ema_phi_target_domain')
     
-    T_src = jax.lax.stop_gradient(potential_elems.transport(ema_encoded_source, forward=True))
-    T_tgt = jax.lax.stop_gradient(potential_elems.transport(ema_encoded_target, forward=False))
+    T_src = jax.lax.stop_gradient(potential_elems.transport(encoded_source, forward=True))
+    T_tgt = jax.lax.stop_gradient(potential_elems.transport(encoded_target, forward=False))
     
-    squared_dist_target = ((T_tgt - encoded_target) ** 2).sum(axis=-1)
+    squared_dist_target = ((T_tgt - encoded_source) ** 2).sum(axis=-1)
     v_target = jnp.maximum(squared_dist_target, 1e-6)
 
-    squared_dist_src = ((T_src - encoded_source) ** 2).sum(axis=-1)
+    squared_dist_src = ((T_src - encoded_target) ** 2).sum(axis=-1)
     v_src = jnp.maximum(squared_dist_src, 1e-6)
        
     loss = v_target + v_src
@@ -164,17 +163,11 @@ class JointNOTAgent(PyTreeNode):
         source_obs: jnp.ndarray,
         target_obs: jnp.ndarray,
         latent_dim: int = 32,
-        hidden_dims_source: Sequence[int] = (256, 256, 256), #128, 128, 128
+        hidden_dims_source: Sequence[int] = (128, 128, 128), #128, 128, 128
         hidden_dims_target: Sequence[int] = (512, 512, 512),
     ):
         rng = jax.random.PRNGKey(seed)
         rng, key1 = jax.random.split(rng, 2)
-        
-        # encoder_source = FourierMLP(
-        #     fourier_net=FourierFeatures(output_size=32, learnable=True),
-        #     mlp=MLP(hidden_dims=hidden_dims + (latent_dim, ), activate_final=True, activations=jax.nn.gelu
-        # ))
-        #encoder_source = MLP(hidden_dims=hidden_dims, activate_final=True, activations=jax.nn.gelu)
         
         # encoder_source = RelativeRepresentation(layer_norm=False, ensemble=True, hidden_dims=hidden_dims_source + (latent_dim, ), bottleneck=False)
         # encoder_target = RelativeRepresentation(layer_norm=False, ensemble=True, hidden_dims=hidden_dims_target + (latent_dim, ), bottleneck=False)
