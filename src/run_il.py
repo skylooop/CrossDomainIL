@@ -108,10 +108,10 @@ def collect_expert(cfg: DictConfig) -> None:
     if cfg.optimal_transport:
         from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP
         
-        neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.leaky_relu)
-        neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.leaky_relu)
-        optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
-        optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
+        neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
+        neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
+        optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+        optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
         latent_dim = 32
         
         not_agent_elems = ENOTCustom(
@@ -121,8 +121,8 @@ def collect_expert(cfg: DictConfig) -> None:
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
             cost_fn=costs.SqEuclidean(),
-            expectile = 0.95,
-            expectile_loss_coef = 0.5, # 0.4
+            expectile = 0.99,
+            expectile_loss_coef = 0.5,
             use_dot_product=False,
             is_bidirectional=True
         )
@@ -133,8 +133,8 @@ def collect_expert(cfg: DictConfig) -> None:
             optimizer_f=optimizer_f,
             optimizer_g=optimizer_g,
             cost_fn=costs.SqEuclidean(),
-            expectile = 0.95,
-            expectile_loss_coef = 0.5, # 0.4
+            expectile = 0.99,
+            expectile_loss_coef = 0.5,
             use_dot_product=False,
             is_bidirectional=True
         )

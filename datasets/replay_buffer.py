@@ -4,7 +4,9 @@ import gymnasium as gym
 import numpy as np
 
 from datasets.dataset import Dataset
-
+import jax
+import jax.numpy as jnp
+import functools
 
 class ReplayBuffer(Dataset):
 
@@ -76,3 +78,17 @@ class ReplayBuffer(Dataset):
 
         self.insert_index = (self.insert_index + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
+    
+#    @functools.partial(jax.jit, static_argnames=('batch_size'))
+    def update_not_rewards(self, joint_ot_agent, potential_pairs, indx:int):
+        observations = self.observations[indx]
+        nobservations = self.next_observations[indx]
+        encoded_target = joint_ot_agent.ema_get_phi_target(observations)
+        encoded_target_next = joint_ot_agent.ema_get_phi_target(nobservations)
+        # encoded_expert = jnp.concatenate(joint_ot_agent(expert_data.observations, method='ema_get_phi_source'), -1)
+        # encoded_expert_next = jnp.concatenate(joint_ot_agent(expert_next_obs, method='ema_get_phi_source'), -1)
+        f, g = potential_pairs.get_fg()
+        reward = -jax.vmap(g)(jnp.concatenate([encoded_target, encoded_target_next], axis=-1)).mean()
+        return reward
+        
+        

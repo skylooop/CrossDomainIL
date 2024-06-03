@@ -140,13 +140,13 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
     ema_encoded_source = network(source_batch.observations, method='ema_phi_source_domain')
     ema_encoded_target = network(target_batch.observations, method='ema_phi_target_domain')
     
-    T_src = jax.lax.stop_gradient(potential_elems.transport(encoded_source, forward=True))
-    T_tgt = jax.lax.stop_gradient(potential_elems.transport(encoded_target, forward=False))
+    T_src = jax.lax.stop_gradient(potential_elems.transport(ema_encoded_source, forward=True))
+    T_tgt = jax.lax.stop_gradient(potential_elems.transport(ema_encoded_target, forward=False))
     
-    squared_dist_target = ((T_tgt - encoded_source) ** 2).sum(axis=-1)
+    squared_dist_target = ((T_tgt - encoded_target) ** 2).sum(axis=-1)
     v_target = jnp.maximum(squared_dist_target, 1e-6)
 
-    squared_dist_src = ((T_src - encoded_target) ** 2).sum(axis=-1)
+    squared_dist_src = ((T_src - encoded_source) ** 2).sum(axis=-1)
     v_src = jnp.maximum(squared_dist_src, 1e-6)
        
     loss = v_target + v_src
@@ -187,8 +187,8 @@ class JointNOTAgent(PyTreeNode):
             model_def=value_def,
             params=params,
             #tx=optax.adam(learning_rate=3e-4)
-            tx=optax.multi_transform({'networks_value_source_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
-                                      'networks_value_target_domain': optax.chain(optax.zero_nans(), optax.adam(learning_rate=3e-4)),
+            tx=optax.multi_transform({'networks_value_source_domain': optax.chain(optax.zero_nans(), optax.adamw(learning_rate=1e-4, weight_decay=0.001)),
+                                      'networks_value_target_domain': optax.chain(optax.zero_nans(), optax.adamw(learning_rate=1e-4, weight_decay=0.001)),
                                       "zero": optax.set_to_zero()},
                                       param_labels={'networks_value_source_domain': "networks_value_source_domain",
                                                     'networks_value_target_domain': 'networks_value_target_domain',
@@ -214,7 +214,7 @@ class JointNOTAgent(PyTreeNode):
                 info[f'target_enc/{k}'] = v
             
             not_loss = jax.lax.cond(update_not, compute_not_distance, lambda *args: 0., self.net, potential_elems, potential_pairs, params, source_batch, target_batch)
-            loss = (value_loss_source + value_loss_target) + 0.05 * not_loss
+            loss = (value_loss_source + value_loss_target) + 0.01 * not_loss
             return loss, info
         
         new_ema_params_source = optax.incremental_update(self.net.params['networks_value_source_domain'], self.net.params['networks_ema_value_source_domain'], 0.005)
