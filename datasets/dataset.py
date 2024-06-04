@@ -78,9 +78,9 @@ class Dataset:
             self.terminal_locs,  = np.nonzero(dones_float > 0)
         
         # FROM HILP
-        self.p_trajgoal = 0.625
+        self.p_trajgoal = 0.6
         self.p_currgoal = 0.0
-        self.p_randomgoal = 0.375
+        self.p_randomgoal = 0.4
         self.reward_scale = 1.0
         self.reward_shift = 0.0
         self.geom_sample = True

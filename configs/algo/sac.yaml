@@ -5,7 +5,7 @@ _partial_: True
 name: SAC
 seed: 42
 
-buffer_size: 1_000_000
+buffer_size: 100_000
 init_random_samples: 1_000
 start_training: 512
 updates_per_step: 1

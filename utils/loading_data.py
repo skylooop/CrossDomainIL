@@ -9,6 +9,10 @@ def prepare_buffers_for_il(cfg, target_obs_space, target_act_space, custom_npy: 
         expert_source = np.load(cfg.imitation_env.path_to_expert, allow_pickle=True).item()
         expert_random = np.load(cfg.imitation_env.path_to_random_expert, allow_pickle=True).item()
         target_random = np.load(cfg.imitation_env.path_to_random_target, allow_pickle=True).item()
+
+        expert_source['dones'][-1] = 1
+        expert_random['dones'][-1] = 1
+        target_random['dones'][-1] = 1
         
         if clip_to_eps:
             lim = 1 - eps
@@ -55,7 +59,15 @@ def prepare_buffers_for_il(cfg, target_obs_space, target_act_space, custom_npy: 
                             next_observations=expert_random['next_observations'],
                             size=expert_random['observations'].shape[0])
         
-        combined_source_ds = expert_source_ds.add_data(observations=expert_random['observations'],
+        expert_source_ds_2 = Dataset(observations=expert_source['observations'],
+                            actions=expert_source['actions'],
+                            rewards=expert_source['rewards'],
+                            dones_float=expert_source['dones'],
+                            masks=1.0 - expert_source['dones'],
+                            next_observations=expert_source['next_observations'],
+                            size=expert_source['observations'].shape[0])
+        
+        combined_source_ds = expert_source_ds_2.add_data(observations=expert_random['observations'],
                             actions=expert_random['actions'],
                             rewards=expert_random['rewards'],
                             dones_float=expert_random['dones'],

@@ -1,5 +1,6 @@
 import os
 import warnings
+
 warnings.filterwarnings('ignore')
 
 os.environ['MUJOCO_GL']='egl'
@@ -22,22 +23,21 @@ import optax
 
 import matplotlib.pyplot as plt
 import wandb
-from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
+from datasets.replay_buffer import ReplayBuffer
 import functools
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
 from agents.notdual import ENOTCustom, W2NeuralDualCustom
 from icvf_utils.icvf_networks import JointNOTAgent
 
-from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
-from gymnasium.wrappers.time_limit import TimeLimit
-from gymnasium.wrappers.record_video import RecordVideo
+from gymnasium.wrappers import RecordEpisodeStatistics, TimeLimit, RecordVideo
 
-import ott
+from datasets.dataset import Batch
+
 from ott.geometry import costs
 
 @functools.partial(jax.jit, static_argnums=2)
@@ -53,6 +53,20 @@ def sinkhorn_loss(
     )
     return sdiv.divergence
 
+def update_not(joint_ot_agent, not_agent_pairs, batch_source, batch_target):
+    encoded_source = joint_ot_agent.ema_get_phi_source(batch_source.observations)
+    encoded_target = joint_ot_agent.ema_get_phi_target(batch_target.observations)
+    encoded_source_next = joint_ot_agent.ema_get_phi_source(batch_source.next_observations)
+    encoded_target_next = joint_ot_agent.ema_get_phi_target(batch_target.next_observations)
+
+    new_not_agent_pairs, loss_pairs, w_dist_pairs = not_agent_pairs.update(batch_source=jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
+                                                            batch_target=jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
+
+    potentials_pairs = not_agent_pairs.to_dual_potentials(finetune_g=True)
+    return new_not_agent_pairs, potentials_pairs, encoded_source, encoded_target, {"loss_elems": loss_pairs, "w_dist_elems": w_dist_pairs}
+
+
+
 def plot_embeddings(sn, se, tn) -> None:
     fig, ax = plt.subplots()
     
@@ -66,20 +80,29 @@ def plot_embeddings(sn, se, tn) -> None:
 
 
 @jax.jit
-def compute_reward_from_not(not_agent, potential_pairs, obs, next_obs, expert_obs, expert_next_obs):
-    encoded_target = jnp.concatenate(not_agent(obs, method='encode_target'), -1)
-    encoded_target_next = jnp.concatenate(not_agent(next_obs, method='encode_target'), -1)
-    encoded_expert = jnp.concatenate(not_agent(expert_obs, method='encode_source'), -1)
-    encoded_expert_next = jnp.concatenate(not_agent(expert_next_obs, method='encode_source'), -1)
+def compute_reward_from_not(joint_ot_agent, potential_pairs, obs, next_obs, expert_obs, expert_next_obs):
+   
+    encoded_source = joint_ot_agent.ema_get_phi_source(expert_obs)
+    encoded_target = joint_ot_agent.ema_get_phi_target(obs)
+    encoded_source_next = joint_ot_agent.ema_get_phi_source(expert_next_obs)
+    encoded_target_next = joint_ot_agent.ema_get_phi_target(next_obs)
+
     f, g = potential_pairs.get_fg()
-    reward = -g(jnp.concatenate([encoded_target, encoded_target_next], axis=-1)) - jax.vmap(f)(jnp.concatenate([encoded_expert, encoded_expert_next], axis=-1)).mean()
-    return reward
+    f, g = jax.vmap(f), jax.vmap(g)
+    reward = -g(
+        jnp.concatenate([encoded_target, encoded_target_next], axis=-1)
+    ) 
+    # - f(
+    #     jnp.concatenate([encoded_source, encoded_source_next], axis=-1)
+    # ).mean()
+
+    return reward.reshape(-1)
 
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
 def collect_expert(cfg: DictConfig) -> None:
     #################
-    # python src/run_il.py hydra.job.chdir=True
+    # python src/train_agent.py hydra.job.chdir=True
     #################
     
     assert cfg.imitation_env.name in SUPPORTED_ENVS
@@ -90,7 +113,6 @@ def collect_expert(cfg: DictConfig) -> None:
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
         mode="offline",
-        project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.imitation_env.name}_{cfg.algo.name}",
     )
@@ -139,42 +161,36 @@ def collect_expert(cfg: DictConfig) -> None:
         eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
     
+    # source_expert_ds, source_random_ds, combined_source_ds, target_ds = prepare_buffers_for_il(cfg=cfg)
+
     source_expert_ds, source_random_ds, combined_source_ds, target_random_buffer = prepare_buffers_for_il(cfg=cfg,
                                                                                                           target_obs_space=eval_env.observation_space,
                                                                                                           target_act_space=eval_env.action_space)
+    
+    target_buffer_agent = ReplayBuffer(observation_space=eval_env.observation_space,
+                                       action_space=eval_env.action_space, capacity=cfg.algo.buffer_size)
     
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
     
     eval_env = TimeLimit(eval_env, max_episode_steps=episode_limit)
     eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: (x + 1) % cfg.save_video_each_ep == 0)
+   
     eval_env = RecordEpisodeStatistics(eval_env, deque_size=cfg.save_expert_episodes)
     
     agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
-    
+        
 
     from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP
         
     
-    neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
-    neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
-    optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
-    optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+    neural_f = ExpectileMLP(dim_hidden=[128, 128, 128, 1], act_fn=jax.nn.elu)
+    neural_g = ExpectileMLP(dim_hidden=[128, 128, 128, 1], act_fn=jax.nn.elu)
+    optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.9)
+    optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.9)
     latent_dim = 32
     
-    # not_agent_elems = ENOTCustom(
-    #     dim_data=latent_dim, 
-    #     neural_f=neural_f,
-    #     neural_g=neural_g,
-    #     optimizer_f=optimizer_f,
-    #     optimizer_g=optimizer_g,
-    #     cost_fn=costs.SqEuclidean(),
-    #     expectile = 0.99,
-    #     expectile_loss_coef = 0.5, # 0.4
-    #     use_dot_product=False,
-    #     is_bidirectional=True
-    # )
     not_agent_pairs = ENOTCustom(
         dim_data=latent_dim * 2, 
         neural_f=neural_f,
@@ -182,7 +198,7 @@ def collect_expert(cfg: DictConfig) -> None:
         optimizer_f=optimizer_f,
         optimizer_g=optimizer_g,
         cost_fn=costs.SqEuclidean(),
-        expectile = 0.99,
+        expectile = 0.98,
         expectile_loss_coef = 0.5, # 0.4
         use_dot_product=False,
         is_bidirectional=True
@@ -191,7 +207,7 @@ def collect_expert(cfg: DictConfig) -> None:
     joint_ot_agent = JointNOTAgent.create(
         cfg.seed,
         latent_dim=latent_dim,
-        target_obs=target_random_buffer.observations[0],
+        target_obs=target_buffer_agent.observations[0],
         source_obs=combined_source_ds.observations[0],
     )
     
@@ -212,47 +228,43 @@ def collect_expert(cfg: DictConfig) -> None:
     # potential_elems_state_f_ckpt = checkpointer_potentials_elems_state_f.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-09/00-17-21/saved_potentials_elems/state_f")
     # potential_elems_state_g_ckpt = checkpointer_potentials_elems_state_g.restore("/home/m_bobrin/CrossDomainIL/outputs/2024-05-09/00-17-21/saved_potentials_elems/state_g")
 
-    state_f_elems = not_agent_elems.state_f.replace(params=potential_elems_state_f_ckpt['params'])
-    state_g_elems = not_agent_elems.state_g.replace(params=potential_elems_state_g_ckpt['params'])
+    # state_f_elems = not_agent_elems.state_f.replace(params=potential_elems_state_f_ckpt['params'])
+    # state_g_elems = not_agent_elems.state_g.replace(params=potential_elems_state_g_ckpt['params'])
 
-    state_f_pairs = not_agent_pairs.state_f.replace(params=potential_pairs_state_f_ckpt['params'])
-    state_g_pairs = not_agent_pairs.state_g.replace(params=potential_pairs_state_g_ckpt['params'])
+    # state_f_pairs = not_agent_pairs.state_f.replace(params=potential_pairs_state_f_ckpt['params'])
+    # state_g_pairs = not_agent_pairs.state_g.replace(params=potential_pairs_state_g_ckpt['params'])
 
-    not_agent_pairs.state_f = state_f_pairs
-    not_agent_pairs.state_g = state_g_pairs
+    # not_agent_pairs.state_f = state_f_pairs
+    # not_agent_pairs.state_g = state_g_pairs
 
-    not_agent_elems.state_f = state_f_elems
-    not_agent_elems.state_g = state_g_elems
-
-    potential_pairs = not_agent_pairs.to_dual_potentials()
-    potential_elems = not_agent_elems.to_dual_potentials()
+    # not_agent_elems.state_f = state_f_elems
+    # not_agent_elems.state_g = state_g_elems
     
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     potential_pairs = not_agent_pairs.to_dual_potentials()
-    potential_elems = not_agent_elems.to_dual_potentials()
     os.makedirs("viz_plots", exist_ok=True)
     
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
-    expert_data = source_expert_ds.sample(256)
     for i in pbar:
-        if i < cfg.algo.start_training:
+        if i < 20000:
             action = env.action_space.sample()
         else:
+            # indx = np.random.randint(target_buffer_agent.size - 1, size=256)
+            # target_buffer_agent.update_not_rewards(joint_ot_agent, potential_pairs, indx=indx)
             action = agent.sample_actions(observation)
-        next_observation, _, terminated, truncated, info = env.step(action) # reward
+            
+        next_observation, _, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         
         if not done:
             mask = 1.0
         else:
             mask = 0.
-        reward = compute_reward_from_not(joint_ot_agent.net, potential_pairs, observation, next_observation,
-                                         expert_data.observations, expert_data.next_observations)
-        #reward = compute_reward_from_not_elem(joint_ot_agent.net, potential_elems, observation)
-        
-        target_random_buffer.insert(observation, action, reward, mask, float(done), next_observation)
+
+        target_buffer_agent.insert(observation, action, 0.0, mask, float(done), next_observation)
         observation = next_observation
+
         if (observation[0] < 2 and observation[1] > 4) or terminated:
             print(f"YES: {terminated}")
             
@@ -264,88 +276,48 @@ def collect_expert(cfg: DictConfig) -> None:
         if i % 1_000 == 0 or i == 0:
             os.makedirs(name='rewards_potential', exist_ok=True)
             np.save("rewards_potential/rewards.npy", arr={
-                'rewards': target_random_buffer.rewards,
+                'rewards': target_buffer_agent.rewards,
             })
 
-            ckptr_agent = PyTreeCheckpointer()
-            ckptr_agent.save(
-                os.getcwd() + "/saved_finetuned_g",
-                potential_pairs.state_g,
-                force=True,
-                save_args=orbax_utils.save_args_from_target(potential_pairs.state_g),
-            )
+            # ckptr_agent = PyTreeCheckpointer()
+            # ckptr_agent.save(
+            #     os.getcwd() + "/saved_finetuned_g",
+            #     potential_pairs.state_g,
+            #     force=True,
+            #     save_args=orbax_utils.save_args_from_target(potential_pairs.state_g),
+            # )
+        if i >= 10000:
+            for _ in range(1):
+                target_data = target_buffer_agent.sample(1024)
+                expert_data = source_expert_ds.sample(1024)
+                not_agent_pairs, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_pairs, expert_data, target_data)
+
+        if i >= 20000:
             
-        if i >= cfg.algo.start_training:
-            for _ in range(cfg.algo.updates_per_step):
-                target_data = target_random_buffer.sample(256)
-                #source_data = combined_source_ds.sample(256)
-                expert_data = source_expert_ds.sample(256)
-                not_agent_pairs, not_agent_elems, potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_elems, not_agent_pairs,
-                                                                                                        expert_data, target_data)
+            for _ in range(1):
+                target_data = target_buffer_agent.sample(512)
+                expert_data = source_expert_ds.sample(512)
+                # not_agent_pairs, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_pairs, expert_data, target_data)
+                rewards = compute_reward_from_not(joint_ot_agent, potential_pairs, 
+                                                  target_data.observations, target_data.next_observations, 
+                                                  expert_data.observations, expert_data.next_observations)
+                
+                target_data = Batch(observations=target_data.observations,
+                     actions=target_data.actions,
+                     rewards=np.asarray(rewards) * 0.01 - 1.0,
+                     masks=target_data.masks,
+                     next_observations=target_data.next_observations)
+
                 actor_update_info = agent.update(target_data)
 
         if i % cfg.log_interval == 0:
+            print("rewards", rewards[:10] * 0.01 - 1.0)
             wandb.log({f"Training/Critic loss": actor_update_info['critic_loss'],
                     f"Training/Actor loss": actor_update_info['actor_loss'],
                     f"Training/Entropy": actor_update_info['entropy'],
                     f"Training/Temperature": actor_update_info['temperature'],
                     f"Training/Temp loss": actor_update_info['temp_loss']})
-            #pca = PCA(n_components=2)
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-                
-            encoded_target = joint_ot_agent.net(target_data.observations, method='encode_target')
-            encoded_target_next = joint_ot_agent.net(target_data.next_observations, method='encode_target')
-            encoded_target = jnp.concatenate(encoded_target, -1)
-            encoded_target_next = jnp.concatenate(encoded_target_next, -1)
             
-            #fitted_pca = pca.fit_transform(encoded_target)
-            fitted_tsne = tsne.fit_transform(encoded_target)
-            fig, ax = plt.subplots()
-            # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-            # fig.savefig(f"viz_plots/target_{i}_pca.png")
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-            fig.savefig(f"viz_plots/target_{i}_tsne.png")
-            
-            #####################################################################################
-            # Source domain
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000)
-            encoded_source = joint_ot_agent.net(expert_data.observations, method='encode_source')
-            encoded_source_next = joint_ot_agent.net(expert_data.next_observations, method='encode_source')
-            encoded_source = jnp.concatenate(encoded_source, -1)
-            encoded_source_next = jnp.concatenate(encoded_source_next, -1)
-
-            fitted_tsne = tsne.fit_transform(encoded_source)
-
-            # fig, ax = plt.subplots()
-            # ax.scatter(fitted_pca[:, 0], fitted_pca[:, 1], label="pca")
-            # fig.savefig(f"viz_plots/source_{i}_pca.png")
-
-            fig, ax = plt.subplots()
-            ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne")
-            fig.savefig(f"viz_plots/source_{i}_tsne.png")
-            
-            ############################
-            # BOTH
-            tsne = TSNE(n_components=2, perplexity=40, n_iter=2000, random_state=cfg.seed)
-            both_domains = np.concatenate([encoded_target, encoded_source], axis=0)
-            tsne_both = tsne.fit_transform(both_domains)
-            
-            fig, ax = plt.subplots()
-            ax.scatter(tsne_both[:, 0], tsne_both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
-            fig.savefig(f"viz_plots/both_{i}_tsne.png")
-            
-            neural_dual_dist_elems = potential_elems.distance(encoded_source, encoded_target)
-            # neural_dual_dist_pairs = potential_pairs.distance(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-            #                                                 jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
-            sinkhorn_dist_elems = sinkhorn_loss(encoded_source, encoded_target)
-            # sinkhorn_dist_pairs = sinkhorn_loss(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-            #                                     jnp.concatenate((encoded_target, encoded_target_next), axis=-1))
-            
-            print(f"\nNeural dual distance between elements in source and target data: {neural_dual_dist_elems:.5f}")
-            #print(f"Neural dual distance between pairs in source and target data: {neural_dual_dist_pairs:.5f}")
-            print(f"Sinkhorn distance between elements in source and target data: {sinkhorn_dist_elems:.5f}")
-            #print(f"Sinkhorn distance between pairs in source and target data: {sinkhorn_dist_pairs:.5f}")
                 
         if i % cfg.eval_interval == 0:
             eval_stats = evaluate(agent, eval_env, cfg.eval_episodes)
@@ -376,4 +348,13 @@ def evaluate(agent, env, num_episodes: int):
 
     if successes is not None:
         stats['success'] = successes / num_episodes
+
     return stats
+
+
+if __name__ == "__main__":
+    try:
+        collect_expert()
+    except KeyboardInterrupt:
+        wandb.finish()
+        exit()

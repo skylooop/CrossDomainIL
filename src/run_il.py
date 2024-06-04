@@ -231,7 +231,7 @@ def collect_expert(cfg: DictConfig) -> None:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=False)
             
             if i % 5 == 0:
-                for _ in range(30):
+                for _ in range(40):
                     target_data = target_random_buffer.sample(1024, goal_conditioned=True)
                     source_data = combined_source_ds.sample(1024, goal_conditioned=True)
                     #source_data = source_expert_ds.sample(1024, icvf=True)
@@ -281,6 +281,9 @@ def collect_expert(cfg: DictConfig) -> None:
                         return "red"
                     elif ( x<6.5 and y>4):
                         return "purple"
+                    
+                # target_data = target_random_buffer.sample(1024, goal_conditioned=True)
+                source_data = combined_source_ds.sample(1024, goal_conditioned=True)
                     
                 colormap_target = list(map(SetColor, target_data.observations[:, 0], target_data.observations[:, 1]))
                 colormap_source = list(map(SetColor, source_data.observations[:, 0], source_data.observations[:, 1]))
