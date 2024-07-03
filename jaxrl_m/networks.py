@@ -22,6 +22,7 @@ import distrax
 import flax.linen as nn
 import jax.numpy as jnp
 import jax
+from flax.linen.initializers import constant, orthogonal
 
 from ott.neural.methods.neuraldual import W2NeuralDual
 import functools
@@ -102,8 +103,11 @@ class PhiValueDomain(nn.Module):
             phi = nn.Sequential([self.encoder(), phi])
         self.phi = phi
     
+    # def get_phi(self, observations):
+    #     return self.phi(observations)[0]
+
     def get_phi(self, observations):
-        return self.phi(observations)[0]
+        return observations[..., :2]
     
     def __call__(self, observations, goals=None):
         phi_s = self.phi(observations)
@@ -198,10 +202,11 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: int = False
     kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = default_init()
+    bias_init: Callable = constant(0.0)
 
     def setup(self):
         self.layers = [
-            nn.Dense(size, kernel_init=self.kernel_init) for size in self.hidden_dims
+            nn.Dense(size, kernel_init=self.kernel_init, bias_init=self.bias_init) for size in self.hidden_dims
         ]
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:

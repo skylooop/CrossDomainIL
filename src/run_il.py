@@ -36,9 +36,167 @@ from icvf_utils.icvf_networks import JointNOTAgent
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.record_video import RecordVideo
-
 import ott
 from ott.geometry import costs
+import d4rl
+import gym
+from gc_datasets.replay_buffer import  Dataset
+
+
+def merge_trajectories(trajs):
+  flat = []
+  for traj in trajs:
+    if traj[0][0][1] > 4:
+        continue 
+    for transition in traj[:200]:
+      flat.append(transition)
+      if transition[3] < 0.5:
+          break
+    flat[-1][3] = 0.0
+  return jax.tree_util.tree_map(lambda *xs: np.stack(xs), *flat)
+
+
+def split_into_trajectories(observations, actions, rewards, masks, dones_float,
+                            next_observations):
+  trajs = [[]]
+
+  for i in tqdm(range(len(observations))):
+    trajs[-1].append(
+        [
+            observations[i],
+            actions[i],
+            rewards[i],
+            masks[i],
+            next_observations[i]])
+    if dones_float[i] == 1.0 and i + 1 < len(observations):
+      trajs.append([])
+
+  return trajs
+
+
+def qlearning_dataset_with_timeouts(env,
+                                    dataset=None,
+                                    terminate_on_end=False,
+                                    disable_goal=True,
+                                    **kwargs):
+    if dataset is None:
+        dataset = env.get_dataset(**kwargs)
+
+    N = dataset['rewards'].shape[0]
+    obs_ = []
+    next_obs_ = []
+    action_ = []
+    reward_ = []
+    done_ = []
+    realdone_ = []
+    if "infos/goal" in dataset:
+        if not disable_goal:
+            dataset["observations"] = np.concatenate(
+                [dataset["observations"], dataset['infos/goal']], axis=1)
+        else:
+            pass
+
+    episode_step = 0
+    for i in range(N-1):
+        obs = dataset['observations'][i]
+        new_obs = dataset['observations'][i + 1]
+        action = dataset['actions'][i]
+        reward = dataset['rewards'][i]
+        done_bool = bool(dataset['terminals'][i])
+        realdone_bool = bool(dataset['terminals'][i])
+        if "infos/goal" in dataset:
+            final_timestep = True if (dataset['infos/goal'][i] !=
+                                dataset['infos/goal'][i + 1]).any() else False
+        else:
+            final_timestep = dataset['timeouts'][i]
+
+        if i < N - 1:
+            done_bool += final_timestep
+
+        if (not terminate_on_end) and final_timestep:
+        # Skip this transition and don't apply terminals on the last step of an episode
+            episode_step = 0
+            continue
+        if done_bool or final_timestep:
+            episode_step = 0
+
+        obs_.append(obs)
+        next_obs_.append(new_obs)
+        action_.append(action)
+        reward_.append(reward)
+        done_.append(done_bool)
+        realdone_.append(realdone_bool)
+        episode_step += 1
+
+    return {
+      'observations': np.array(obs_),
+      'actions': np.array(action_),
+      'next_observations': np.array(next_obs_),
+      'rewards': np.array(reward_)[:],
+      'terminals': np.array(done_)[:],
+      'realterminals': np.array(realdone_)[:],
+  }
+    
+    
+def get_dataset(env: gym.Env, expert: bool = False,
+                num_episodes: int = 1,
+                clip_to_eps: bool = True,
+                eps: float = 1e-5,
+                normalize_agent_states: bool = False,
+                fix_antmaze_timeout=True):
+        
+        if 'antmaze' in env.spec.id and fix_antmaze_timeout:
+            dataset = qlearning_dataset_with_timeouts(env)
+        else:
+            dataset = d4rl.qlearning_dataset(env)
+
+        if clip_to_eps:
+            lim = 1 - eps
+            dataset['actions'] = np.clip(dataset['actions'], -lim, lim)
+            
+        dones_float = np.zeros_like(dataset['rewards'])
+        for i in range(len(dones_float) - 1):
+            if np.linalg.norm(dataset['observations'][i + 1] - dataset['next_observations'][i]) > 1e-6 or dataset['terminals'][i] == 1.0:
+                dones_float[i] = 1
+            else:
+                dones_float[i] = 0
+        dones_float[-1] = 1
+        if 'realterminals' in dataset:
+            masks = 1.0 - dataset['realterminals'].astype(np.float32)
+        else:
+            masks = 1.0 - dataset['terminals'].astype(np.float32)
+        dataset['masks'] = masks
+        dataset['dones'] = dones_float
+        if expert:
+            trajectories = split_into_trajectories(
+                        observations=dataset['observations'].astype(jnp.float32),
+                        actions=dataset['actions'].astype(jnp.float32),
+                        rewards=dataset['rewards'].astype(jnp.float32),
+                        masks=masks,
+                        dones_float=dones_float.astype(jnp.float32),
+                        next_observations=dataset['next_observations'].astype(jnp.float32))
+            
+            returns = [sum([t[2] for t in traj]) for traj in trajectories]
+            idx = np.argpartition(returns, -num_episodes)[-num_episodes:]
+            demo_returns = [returns[i] for i in idx]
+            print(f"Expert returns {demo_returns}, mean {np.mean(demo_returns)}")
+            expert_demo = [trajectories[i] for i in idx]
+            expert_demos = merge_trajectories(expert_demo)
+            dataset = {"observations": expert_demos[0],
+                       'next_observations': expert_demos[-1],
+                       'actions': expert_demos[1],
+                       'rewards': expert_demos[2],
+                       'masks': expert_demos[3],
+                       'dones': 1-expert_demos[3]}
+        
+        return  Dataset(observations= dataset['observations'],
+                            actions=  dataset['actions'],
+                            rewards=  dataset['rewards'],
+                            dones_float = dataset['dones'],
+                            masks= dataset['masks'],
+                            next_observations= dataset['next_observations'],
+                            size= dataset['observations'].shape[0])
+
 
 @functools.partial(jax.jit, static_argnums=2)
 def sinkhorn_loss(
@@ -163,20 +321,25 @@ def collect_expert(cfg: DictConfig) -> None:
                                                                                                           target_act_space=eval_env.action_space)
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
+
+    combined_source_ds = get_dataset(gym.make("antmaze-umaze-v2"), expert=True, num_episodes=100)
+
+    print("target_random_buffer", target_random_buffer.observations.shape)
+    print("combined_source_ds", combined_source_ds.observations.shape)
     
     eval_env = TimeLimit(eval_env, max_episode_steps=episode_limit)
     eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: (x + 1) % cfg.save_video_each_ep == 0)
     eval_env = RecordEpisodeStatistics(eval_env, deque_size=cfg.save_expert_episodes)
     
-    agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
-                                                     actions=env.action_space.sample()[None])
+    # agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
+                                                    #  actions=env.action_space.sample()[None])
     if cfg.optimal_transport:
         from datasets.gc_dataset import GCSDataset
         from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP
         from ott.neural.methods import neuraldual
         
-        neural_f = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
-        neural_g = ExpectileMLP(dim_hidden=[512, 512, 512, 1], act_fn=jax.nn.elu)
+        neural_f = ExpectileMLP(dim_hidden=[256, 256, 256, 1], act_fn=jax.nn.elu)
+        neural_g = ExpectileMLP(dim_hidden=[256, 256, 256, 1], act_fn=jax.nn.elu)
         optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
         optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
         latent_dim = 32
@@ -220,12 +383,13 @@ def collect_expert(cfg: DictConfig) -> None:
             target_data = target_random_buffer.sample(1024, goal_conditioned=True)
             source_data = combined_source_ds.sample(1024, goal_conditioned=True)
             not_agent_pairs, not_agent_elems, potential_elems, potential_pairs, encoded_source, encoded_target, not_info = update_not(joint_ot_agent, not_agent_elems, not_agent_pairs,
-                                                                                                    source_data, target_data)
+                                                                                                        source_data, target_data)
+        
         os.makedirs("viz_plots", exist_ok=True)
         for i in tqdm(range(300_005), leave=True):
             target_data = target_random_buffer.sample(1024, goal_conditioned=True)
             source_data = combined_source_ds.sample(1024, goal_conditioned=True)
-            if i % 5 == 0:
+            if i % 5 == 0 and i > 10000:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=True)
             else:
                 joint_ot_agent, info = joint_ot_agent.update(source_data, target_data, potential_elems, potential_pairs, update_not=False)
@@ -322,7 +486,7 @@ def collect_expert(cfg: DictConfig) -> None:
                 # fig.savefig(f"viz_plots/source_{i}_pca.png")
 
                 fig, ax = plt.subplots()
-                ax.scatter(fitted_tsne[:, 0], fitted_tsne[:, 1], label="tsne", c=colormap_source)
+                ax.scatter(source_data.observations[:, 0], source_data.observations[:, 1], label="tsne", c=colormap_source)
                 fig.savefig(f"viz_plots/source_{i}_tsne.png")
                 
                 ############################

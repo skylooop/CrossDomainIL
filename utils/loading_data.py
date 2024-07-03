@@ -1,5 +1,5 @@
 import numpy as np
-from datasets.replay_buffer import ReplayBuffer, Dataset
+from gc_datasets.replay_buffer import ReplayBuffer, Dataset
 
 def prepare_buffers_for_il(cfg, target_obs_space, target_act_space, custom_npy: bool=True,
                            clip_to_eps:bool = True, eps:float=1e-5, target_antmaze:bool=True):
@@ -74,14 +74,14 @@ def prepare_buffers_for_il(cfg, target_obs_space, target_act_space, custom_npy: 
                             masks=1.0 - expert_random['dones'],
                             next_observations=expert_random['next_observations'])
         
-        target_dataset_random = Dataset(observations=target_random['observations'],
-                            actions=target_random['actions'],
-                            rewards=target_random['rewards'],
-                            dones_float=dones_float,
-                            masks=1.0 - target_random['dones'],
-                            next_observations=target_random['next_observations'],
-                            size=target_random['observations'].shape[0])
+        # target_dataset_random = Dataset(observations=target_random['observations'],
+        #                     actions=target_random['actions'],
+        #                     rewards=target_random['rewards'],
+        #                     dones_float=dones_float,
+        #                     masks=1.0 - target_random['dones'],
+        #                     next_observations=target_random['next_observations'],
+        #                     size=target_random['observations'].shape[0])
         
-        target_random_buffer = ReplayBuffer(observation_space=target_obs_space, action_space=target_act_space, capacity=cfg.algo.buffer_size)
-        target_random_buffer.initialize_with_dataset(target_dataset_random)
-        return expert_source_ds, non_expert_source_dataset, combined_source_ds, target_random_buffer
+        # target_random_buffer = ReplayBuffer(observation_space=target_obs_space, action_space=target_act_space, capacity=target_dataset_random.size)
+        # target_random_buffer.initialize_with_dataset(target_dataset_random)
+        return expert_source_ds, non_expert_source_dataset, combined_source_ds

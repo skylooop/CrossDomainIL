@@ -74,7 +74,7 @@ class _CustomUMazeEnv(MazeEnv, utils.EzPickle, _FrameBufferEnv):
 
         if self._initialized:
             self._reset_buffer()
-        return self._get_obs(), None
+        return self._get_obs(), {}
 
 
 class CustomPointUMazeSize3Env(_CustomUMazeEnv):

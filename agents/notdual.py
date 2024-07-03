@@ -1,3 +1,4 @@
+import functools
 from ott.neural.methods.neuraldual import W2NeuralDual
 from ott.neural.methods.expectile_neural_dual import ExpectileNeuralDual
 import jax.numpy as jnp
@@ -124,13 +125,15 @@ class ENOTPotentialsCustom:
         f, g = self.get_fg()
         return (jax.vmap(f)(x) + jax.vmap(g)(y)).mean()
     
-    def transport(self, vec, forward: bool):
-        twist_op = jax.vmap(self.cost_fn.twist_operator, in_axes=[0, 0, None])
+    @jax.jit
+    def transport(self, vec, forward: bool = True):
+        # twist_op = jax.vmap(self.cost_fn.twist_operator, in_axes=[0, 0, None])
         grad_f = jax.vmap(self.state_f.potential_gradient_fn(self.state_f.params))
-        grad_g = jax.vmap(self.state_g.potential_gradient_fn(self.state_g.params))
-        if forward:
-            return twist_op(vec, grad_f(vec), False)
-        return twist_op(vec, grad_g(vec), True)
+        return grad_f(vec)
+        # grad_g = jax.vmap(self.state_g.potential_gradient_fn(self.state_g.params))
+        # if forward:
+        #     return twist_op(vec, grad_f(vec), False)
+        # return twist_op(vec, grad_g(vec), True)
 
 
 
@@ -181,7 +184,7 @@ class ENOTCustom(ExpectileNeuralDual):
     
     def update(self, batch_source, batch_target):
 
-        update_forward = self.step % 2 == 0
+        update_forward = self.step % 2 == 0 or not self.is_bidirectional
         train_batch = {}
 
         if update_forward:

@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from datasets.dataset import Batch
+from gc_datasets.dataset import Batch
 from networks.common import Model, LayerNormMLP
 from networks.critic_net import DoubleCritic
 from networks.policies import _sample_actions
