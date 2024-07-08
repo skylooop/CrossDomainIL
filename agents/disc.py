@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Tuple, Any, Callable
+from typing import Dict, Tuple, Any, Callable
 import jax
 import jax.numpy as jnp
 from flax import linen as flax_nn
@@ -34,6 +34,8 @@ class DiscModel(MLP):
 
 class Discriminator(PyTreeNode):
     state: TrainState
+    mean: jnp.ndarray = 0.0
+    var: jnp.ndarray = 1.0
 
     @classmethod
     def create(
@@ -154,11 +156,13 @@ class Discriminator(PyTreeNode):
         return loss
 
     @jax.jit
-    def update_step(self, expert_batch, imitation_batch, norm_mean, norm_var, key):
+    def update_step(self, expert_batch, imitation_batch, key):
+
+        r =  self.predict_reward(imitation_batch)
+        new_mean = self.mean * 0.99 + r.mean() * 0.01
+        new_var = self.var * 0.99 + ((r - new_mean) ** 2).mean() * 0.01
         
-        norm_expert_batch = (expert_batch - norm_mean) / jnp.sqrt(
-            norm_var + 1e-8
-        )
+        norm_expert_batch = expert_batch 
 
         def loss_fn(params):
             info = {}
@@ -168,14 +172,12 @@ class Discriminator(PyTreeNode):
         new_state, info = self.state.apply_loss_fn(loss_fn=loss_fn, has_aux=True)
         new_key, key = jax.random.split(key)
 
-        return self.replace(state=new_state), new_key, info
+        return self.replace(state=new_state, mean=new_mean, var=new_var), new_key, info
 
-    def predict_reward(
-        self,
-        input,
-    ) -> jnp.ndarray:
+    def predict_reward(self, input) -> jnp.ndarray:
         d = self.state(input, params=self.state.params)
-        return - g_nonsaturating_loss(d).reshape(-1)
+        r =  - g_nonsaturating_loss(d).reshape(-1)
+        return (r - self.mean) / jnp.sqrt(self.var + 1e-10)
     
 
     

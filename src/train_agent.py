@@ -91,7 +91,7 @@ def update_disc(joint_ot_agent, D, potential_proj, batch_source, batch_target, d
     encoded_target_next = joint_ot_agent.ema_get_phi_target(batch_target.next_observations)
 
     new_D, d_key, _ = D.update_step(jnp.concatenate((encoded_source, encoded_source_next), axis=-1),
-                                    jnp.concatenate((encoded_target, encoded_target_next), axis=-1), 1, 1, d_key)
+                                    jnp.concatenate((encoded_target, encoded_target_next), axis=-1), d_key)
 
     return new_D, d_key, encoded_source, encoded_target
 
@@ -225,8 +225,8 @@ def collect_expert(cfg: DictConfig) -> None:
     # source_expert_ds, source_random_ds, combined_source_ds, target_ds = prepare_buffers_for_il(cfg=cfg)
 
     source_expert_ds, source_random_ds, combined_source_ds = prepare_buffers_for_il(cfg=cfg,
-                                                                                                          target_obs_space=eval_env.observation_space,
-                                                                                                          target_act_space=eval_env.action_space)
+                                                                                    target_obs_space=eval_env.observation_space,
+                                                                                    target_act_space=eval_env.action_space)
     
     target_buffer_agent = ReplayBuffer(observation_space=eval_env.observation_space,
                                        action_space=eval_env.action_space, capacity=cfg.algo.buffer_size)
@@ -283,7 +283,7 @@ def collect_expert(cfg: DictConfig) -> None:
             expectile_loss_coef = 1.0, # 0.4
             use_dot_product=False,
             is_bidirectional=False,
-            target_weight=10.0
+            target_weight=5.0
     )
     
     D, d_key = Discriminator.create(jnp.ones((4,)), 2e-5, 10, 10000, 1e-5)
@@ -326,11 +326,9 @@ def collect_expert(cfg: DictConfig) -> None:
     
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
     for i in pbar:
-        if i < 1000:
+        if i < 5000:
             action = env.action_space.sample()
         else:
-            # indx = np.random.randint(target_buffer_agent.size - 1, size=256)
-            # target_buffer_agent.update_not_rewards(joint_ot_agent, potential_pairs, indx=indx)
             action = agent.sample_actions(observation)
             
         next_observation, _, terminated, truncated, info = env.step(action)
@@ -341,7 +339,10 @@ def collect_expert(cfg: DictConfig) -> None:
         else:
             mask = 0.
 
-        ri = compute_reward_from_disc(joint_ot_agent, D, observation[np.newaxis,], next_observation[np.newaxis,])[0] 
+        if i < 1000:
+            ri = 0.0
+        else:
+            ri = compute_reward_from_disc(joint_ot_agent, D, observation[np.newaxis,], next_observation[np.newaxis,])[0] 
         
         target_buffer_agent.insert(observation, action, float(ri), mask, float(done), next_observation)
         buffer_disc.insert(observation, action, float(ri), mask, float(done), next_observation)
@@ -407,7 +408,6 @@ def collect_expert(cfg: DictConfig) -> None:
                 # rewards = compute_reward_from_disc(joint_ot_agent, D, target_data.observations, target_data.next_observations)
                 # rewards = compute_reward_from_not(joint_ot_agent, not_pairs.to_dual_potentials(), target_data.observations, target_data.next_observations)
                 rewards = target_data.rewards
-                rewards = (rewards - jnp.mean(rewards)) / jnp.std(rewards)
                 assert len(rewards) == 512
 
                 target_data = Batch(observations=target_data.observations,
@@ -418,7 +418,7 @@ def collect_expert(cfg: DictConfig) -> None:
 
                 actor_update_info = agent.update(target_data)
 
-        if i % 5000 == 0 and  i > 10000:
+        if i % 5000 == 0 and  i > 0:
             fig, ax = plt.subplots()
             both = jnp.concatenate([encoded_target, encoded_source], axis=0)
             ax.scatter(both[:, 0], both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
