@@ -2,6 +2,7 @@ import os
 import warnings
 
 import gym
+import gymnasium
 from matplotlib import axis
 
 
@@ -43,17 +44,40 @@ from agents.disc import Discriminator
 from run_il import get_dataset
 from src.gail.base import GAIL
 from gymnasium.wrappers import RecordEpisodeStatistics, TimeLimit, RecordVideo
-from gc_datasets.dataset import Batch
+from gc_datasets.dataset import Batch, Dataset
 from ott.geometry import costs
 
+def load_expert(path_to_expert):
+
+    expert_source = np.load(path_to_expert, allow_pickle=True).item()
+
+
+    expert_source['dones'][-1] = 1
+
+    lim = 1 - 1e-5
+    expert_source['actions'] = np.clip(expert_source['actions'], -lim, lim)
+        
+    
+    expert_source['observations'] = expert_source['observations'].astype(np.float32)
+    expert_source['next_observations'] = expert_source['next_observations'].astype(np.float32)
+    
+    
+    return Dataset(observations=expert_source['observations'],
+                        actions=expert_source['actions'],
+                        rewards=expert_source['rewards'],
+                        dones_float=expert_source['dones'],
+                        masks=1.0 - expert_source['dones'],
+                        next_observations=expert_source['next_observations'],
+                        size=expert_source['observations'].shape[0])
+    
 
 class CoordEncoders(EncodersPair):
 
     def agent_embed(self, x): 
-        return x[..., :2]
+        return x
 
     def expert_embed(self, x): 
-        return x[..., :2]
+        return x
 
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -76,52 +100,21 @@ def collect_expert(cfg: DictConfig) -> None:
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
     
-    if cfg.imitation_env.name == "PointUMaze":
-        from envs.maze_envs import CustomPointUMazeSize3Env
-        env = CustomPointUMazeSize3Env()
-        eval_env = CustomPointUMazeSize3Env()
-        episode_limit = 1000
-        
-    elif cfg.imitation_env.name == "PointAntUMaze":
-        from envs.maze_envs import CustomAntUMazeSize3Env
-        episode_limit = 1000
-        env = CustomAntUMazeSize3Env()
-        eval_env = CustomAntUMazeSize3Env()
-        
-    elif cfg.imitation_env.name == 'InvertedPendulum-v2':
-        from envs.envs import ExpertInvertedPendulumEnv
-        env = ExpertInvertedPendulumEnv()
-        eval_env = ExpertInvertedPendulumEnv()
-        episode_limit = 1000
-        
-    elif cfg.imitation_env.name == 'InvertedDoublePendulum-v2':
-        from envs.envs import ExpertInvertedDoublePendulumEnv
-        env = ExpertInvertedDoublePendulumEnv()
-        eval_env = ExpertInvertedDoublePendulumEnv()
-        episode_limit = 1000
-        
-    elif cfg.imitation_env.name == 'Reacher2-v2':
-        from envs.more_envs import CustomReacher2Env
-        env = CustomReacher2Env(l2_penalty=True)
-        eval_env = CustomReacher2Env(l2_penalty=True)
-        episode_limit = 50
-        
-    elif cfg.imitation_env.name == 'Reacher3-v2':
-        from envs.more_envs import CustomReacher3Env
-        env = CustomReacher3Env(l2_penalty=True)
-        eval_env = CustomReacher3Env(l2_penalty=True)
-        episode_limit = 50
-        
-    elif cfg.imitation_env.name == 'HalfCheetah-v2':
-        from envs.envs import ExpertHalfCheetahNCEnv
-        env = ExpertHalfCheetahNCEnv()
-        eval_env = ExpertHalfCheetahNCEnv()
-        episode_limit = 1000
     
+    # from envs.maze_envs import CustomPointUMazeSize3Env
+    # env = CustomPointUMazeSize3Env()
+    # eval_env = CustomPointUMazeSize3Env()
+    episode_limit = 1000
+        
+    # from envs.maze_envs import CustomAntUMazeSize3Env
+    # episode_limit = 1000
+    # env = CustomAntUMazeSize3Env()
+    # eval_env = CustomAntUMazeSize3Env(),
 
-    source_expert_ds, source_random_ds, combined_source_ds = prepare_buffers_for_il(cfg=cfg,
-                                                                                    target_obs_space=eval_env.observation_space,
-                                                                                    target_act_space=eval_env.action_space)
+    env = gymnasium.make("Hopper-v4", max_episode_steps=1000)
+    eval_env = gymnasium.make("Hopper-v4", render_mode="rgb_array", max_episode_steps=1000)
+    
+    source_expert_ds = load_expert("saved_expert/trained_expert.npy")
     
     target_buffer_agent = ReplayBuffer(observation_space=eval_env.observation_space,
                                        action_space=eval_env.action_space, capacity=cfg.algo.buffer_size)
@@ -129,7 +122,7 @@ def collect_expert(cfg: DictConfig) -> None:
     buffer_disc = ReplayBuffer(observation_space=eval_env.observation_space,
                                action_space=eval_env.action_space, capacity=5000)
     
-    # source_expert_ds = get_dataset(gym.make("antmaze-umaze-v2"), expert=True, num_episodes=10)
+    # source_expert_ds = get_dataset(gym.make('hopper-expert-v2'), expert=True, num_episodes=10)
     
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
@@ -146,15 +139,16 @@ def collect_expert(cfg: DictConfig) -> None:
     from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP, NegativeMLP
         
     
-    neural_f = ExpectileMLP(dim_hidden=[128, 128, 128, 2], act_fn=jax.nn.elu)
+    latent_dim = 11
+
+    neural_f = ExpectileMLP(dim_hidden=[128, 128, 128, latent_dim*2], act_fn=jax.nn.elu)
     neural_g = NegativeMLP(dim_hidden=[128, 128, 128, 1], act_fn=jax.nn.elu)
     optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
     optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
-    latent_dim = 2
 
 
     not_proj = ENOTCustom(
-            dim_data=latent_dim, 
+            dim_data=latent_dim * 2, 
             neural_f=neural_f,
             neural_g=neural_g,
             optimizer_f=optimizer_f,
@@ -167,8 +161,8 @@ def collect_expert(cfg: DictConfig) -> None:
             target_weight=5.0
     )
     
-    gail = EmbedGAIL.create(Discriminator.create(jnp.ones((4,)), 2e-5, 10, 10000, 1e-5), 
-                            [RewardsStandartisation(), NegativeShift()], 
+    gail = EmbedGAIL.create(Discriminator.create(jnp.ones((latent_dim * 2,)), 5e-5, 10, 10000, 1e-5), 
+                            [RewardsStandartisation()], 
                             CoordEncoders(), 
                             not_proj)
      
@@ -179,21 +173,27 @@ def collect_expert(cfg: DictConfig) -> None:
     os.makedirs("viz_plots", exist_ok=True)
     
     pbar = tqdm(range(1, cfg.max_steps + 1), leave=True)
+    
+    time_step = 0
+
     for i in pbar:
-        if i < 5000:
+        if i < 10000:
             action = env.action_space.sample()
         else:
             action = agent.sample_actions(observation)
             
         next_observation, _, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+
+        time_step += 1
         
         if not done:
             mask = 1.0
         else:
             mask = 0.
+            time_step = 0
 
-        if i < 1000:
+        if i < 3000:
             ri = 0.0
         else:
             ri = gail.predict_reward(observation[np.newaxis,], next_observation[np.newaxis,])[0] 
@@ -203,8 +203,8 @@ def collect_expert(cfg: DictConfig) -> None:
         
         observation = next_observation
 
-        if (observation[0] < 2 and observation[1] > 4) or terminated:
-            print(f"YES: {terminated}")
+        # if (observation[0] < 2 and observation[1] > 4) or terminated:
+        #     print(f"YES: {terminated}")
             
         if done:
             wandb.log({f"Training/rewards": info['episode']['r'],
@@ -212,32 +212,30 @@ def collect_expert(cfg: DictConfig) -> None:
             (observation, info), done = env.reset(), False
             
     
-        if i == 1000:
+        if i == 3000:
 
             for _ in range(10000):
                 target_data = target_buffer_agent.sample(1024)
                 expert_data = source_expert_ds.sample(1024)
-                gail = gail.update_ot(expert_data.observations, target_data.observations)
+                gail = gail.update_ot(expert_data.observations, expert_data.next_observations, 
+                                        target_data.observations, target_data.next_observations)
 
 
-        if i >= 1000 and i % 1 == 0:
+        if i >= 3000 and i % 1 == 0:
 
-            for _ in range(2):
+            for _ in range(1):
                 target_data = buffer_disc.sample(1024)
                 expert_data = source_expert_ds.sample(1024)
             
-                gail = gail.update_ot(expert_data.observations, target_data.observations)
+                gail = gail.update_ot(expert_data.observations, expert_data.next_observations, 
+                                        target_data.observations, target_data.next_observations)
                 gail, info = gail.update(expert_data.observations, expert_data.next_observations, 
                                         target_data.observations, target_data.next_observations)
                 encoded_source, encoded_target = gail.encoders.expert_embed(expert_data.observations), gail.encoders.agent_embed(target_data.observations)
                 
 
-        if i >= 5000:
+        if i >= 10000:
 
-            target_data = target_buffer_agent.sample(1024, goal_conditioned=True)
-            expert_data = source_expert_ds.sample(1024, goal_conditioned=True)
-
-            
             for _ in range(1):
                 target_data = target_buffer_agent.sample(512)
                 actor_update_info = agent.update(target_data)

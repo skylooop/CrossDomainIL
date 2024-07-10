@@ -3,11 +3,9 @@ import flax.struct
 import flax.struct
 from jaxrl_m.typing import *
 from jaxrl_m.networks import MLP, get_latent, ensemblize, CrossDomainNetwork, RelativeRepresentation, PhiValueDomain
-
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-
 from flax.struct import PyTreeNode
 from jaxtyping import PRNGKeyArray
 from jaxrl_m.common import TrainState
@@ -16,6 +14,17 @@ import optax
 from networks.common import FourierFeatures
 import copy
 import functools
+
+
+class TrainedModel(PyTreeNode):
+    params: Params
+    apply_fn: Callable = flax.struct.field(pytree_node=False)
+
+    def __call__(self, *args, **kwargs):
+        variables = {"params": self.params}
+
+        return self.apply_fn(variables, *args, **kwargs)
+    
 
 class ICVFWithEncoder(nn.Module):
     encoder: nn.Module
@@ -231,6 +240,7 @@ def compute_not_distance(network, potential_elems, potential_pairs, params, sour
     loss = v_target.mean() + 0.2 * v_src.mean()
     return loss
 
+
 class JointNOTAgent(PyTreeNode):
     rng: PRNGKeyArray
     net: TrainState
@@ -322,6 +332,7 @@ class JointNOTAgent(PyTreeNode):
     def ema_get_phi_target(self, obs):
         phi = self.net(obs, method='ema_phi_target_domain')
         return phi
+    
     
 icvfs = {
     'encodervf': JointNOTAgent,

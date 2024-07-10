@@ -11,13 +11,13 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 import numpy as np
 import random
-
+import gymnasium as gym
 import wandb
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
 from utils.const import SUPPORTED_ENVS
-from datasets.replay_buffer import ReplayBuffer
+from gc_datasets.replay_buffer import ReplayBuffer
 
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from gymnasium.wrappers.time_limit import TimeLimit
@@ -85,7 +85,10 @@ def collect_expert(cfg: DictConfig) -> None:
         env = ExpertHalfCheetahNCEnv()
         eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
-        
+    
+    env = gym.make("Hopper-v4", max_episode_steps=1000)
+    eval_env = gym.make("Hopper-v4", max_episode_steps=1000, render_mode="rgb_array")
+
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
     
@@ -100,7 +103,7 @@ def collect_expert(cfg: DictConfig) -> None:
     (observation, info), done = env.reset(seed=cfg.seed), False
     
     if cfg.train_expert:
-        for i in tqdm(range(1, cfg.max_steps + 1)):
+        for i in tqdm(range(1, 400_000 + 1)):
             if i < cfg.algo.start_training:
                 action = env.action_space.sample()
             else:
