@@ -11,7 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 import numpy as np
 import random
-
+import gymnasium
 import wandb
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
@@ -19,9 +19,7 @@ ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, ind
 from utils.const import SUPPORTED_ENVS
 from datasets.replay_buffer import ReplayBuffer
 
-from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
-from gymnasium.wrappers.time_limit import TimeLimit
-from gymnasium.wrappers.record_video import RecordVideo
+from gymnasium.wrappers import RecordEpisodeStatistics, TimeLimit, RecordVideo
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="expert")
 def collect_expert(cfg: DictConfig) -> None:
@@ -29,7 +27,7 @@ def collect_expert(cfg: DictConfig) -> None:
     # python src/run_expert.py hydra.job.chdir=True
     #################
     
-    assert cfg.env.name in SUPPORTED_ENVS
+    #assert cfg.env.name in SUPPORTED_ENVS
     
     print(f"Collecting Expert data using {cfg.algo.name} on {cfg.env.name} env")
     print(OmegaConf.to_yaml(cfg))
@@ -37,7 +35,6 @@ def collect_expert(cfg: DictConfig) -> None:
     print(f"Saving expert weights into {os.getcwd()}")
     wandb.init(
         mode='offline',
-        project=cfg.logger.project,
         config=dict(cfg),
         group="expert_" + f"{cfg.env.name}_{cfg.algo.name}",
     )
@@ -85,13 +82,18 @@ def collect_expert(cfg: DictConfig) -> None:
         env = ExpertHalfCheetahNCEnv()
         eval_env = ExpertHalfCheetahNCEnv()
         episode_limit = 1000
-        
+    
+    elif cfg.env.name == 'Hopper':
+        env = gymnasium.make("Hopper-v4", render_mode='rgb_array')
+        eval_env = gymnasium.make("Hopper-v4", render_mode='rgb_array')
+        episode_limit = 1000
+
     env = TimeLimit(env, max_episode_steps=episode_limit)
     env = RecordEpisodeStatistics(env)
     
     eval_env = TimeLimit(eval_env, max_episode_steps=episode_limit)
-    eval_env = RecordVideo(eval_env, video_folder='agent_video', episode_trigger=lambda x: (x + 1) % cfg.save_video_each_ep == 0)
-    eval_env = RecordEpisodeStatistics(eval_env, deque_size=cfg.save_expert_episodes)
+    eval_env = RecordVideo(eval_env, video_folder='videos/agent_video', episode_trigger=lambda x: (x + 1) % cfg.save_video_each_ep == 0)
+    eval_env = RecordEpisodeStatistics(eval_env, buffer_length=cfg.save_expert_episodes)
     
     expert_agent = hydra.utils.instantiate(cfg.algo)(observations=env.observation_space.sample()[None],
                                                      actions=env.action_space.sample()[None])
@@ -107,11 +109,8 @@ def collect_expert(cfg: DictConfig) -> None:
                 action = expert_agent.sample_actions(observation)
             next_observation, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
-            
-            if not done:
-                mask = 1.0
-            else:
-                mask = 0.0
+        
+            mask = 1.0 if not done else 0.0
             replay_buffer.insert(observation, action, reward, mask, float(done),
                                 next_observation)
             observation = next_observation

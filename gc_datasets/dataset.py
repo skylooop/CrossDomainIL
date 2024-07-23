@@ -121,7 +121,7 @@ class Dataset:
         self.terminal_locs, = np.nonzero(self.dones_float > 0)
         return self
     
-    def sample(self, batch_size: int, goal_conditioned: bool = False, indx=None) -> Batch:
+    def sample(self, batch_size: int=None, goal_conditioned: bool = False, indx=None) -> Batch:
         if indx is None:
             indx = np.random.randint(self.size - 1, size=batch_size)
         if goal_conditioned:
@@ -135,12 +135,12 @@ class Dataset:
                      goals=jax.tree_util.tree_map(lambda arr: arr[goal_indx], self.observations),
                      next_observations=self.next_observations[indx],
                      next_goals=jax.tree_util.tree_map(lambda arr: arr[goal_indx], self.next_observations))
-            
+ 
         return Batch(observations=self.observations[indx],
                      actions=self.actions[indx],
                      rewards=self.rewards[indx],
                      masks=self.masks[indx],
-                     next_observations=self.next_observations[indx])
+                     next_observations=self.next_observations[indx]), indx
 
     def get_iter(self, batch_size):
         #for i in range(self.size // batch_size):

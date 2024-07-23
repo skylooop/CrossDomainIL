@@ -1,5 +1,0 @@
-batch_size: 256
-discount: 0.999
-hidden_dims: [256, 256]
-expectile: 0.9
-target_update_rate: 0.005

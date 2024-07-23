@@ -1,4 +1,4 @@
-_target_: agents.sac.SAC
+_target_: main_agents.sac.SAC
 _partial_: True
 
 ## FROM D3IL paper

@@ -86,8 +86,6 @@ class RelativeRepresentation(nn.Module):
         if self.ensemble:
             repr_class = ensemblize(repr_class, 2)
         rep = repr_class(self.hidden_dims, activate_final=self.activate_final, activations=nn.gelu)(inputs)
-        # p = rep.shape[-1] // 2
-        # return rep[..., :p], rep[..., p:] #phi psi
         return rep
 
 class PhiValueDomain(nn.Module):
@@ -107,7 +105,7 @@ class PhiValueDomain(nn.Module):
     #     return self.phi(observations)[0]
 
     def get_phi(self, observations):
-        return observations[..., :2]
+        return self.phi(observations) #[..., :2]
     
     def __call__(self, observations, goals=None):
         phi_s = self.phi(observations)

@@ -1,6 +1,7 @@
 import os
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
+from dataclasses import field
 import flax
 import flax.linen as nn
 import jax
@@ -23,6 +24,19 @@ PRNGKey = Any
 Shape = Sequence[int]
 Dtype = Any
 InfoDict = Dict[str, float]
+
+class Discriminator(nn.Module):
+    hidden_dims: Sequence[int] = field(default_factory=list) # from paper
+    activate_final: bool = False
+    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.leaky_relu
+     
+    @nn.compact
+    def __init__(self, x: jnp.ndarray):
+        for i, size in enumerate(self.hidden_dims):
+            x = nn.Dense(size, kernel_init=default_init())(x)
+            if i + 1 < len(self.hidden_dims) or self.activate_final:
+                x = self.activations(x)
+        return nn.sigmoid(x)
 
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
