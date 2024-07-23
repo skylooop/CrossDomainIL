@@ -43,7 +43,7 @@ class DIDA(PyTreeNode):
     ):
         rng = jax.random.PRNGKey(42)
         encoder_def = EncoderModel(encoders=encoders, reverse_layer=ReverseLayer())
-        params = encoder_def.init(rng, jnp.ones_like(observation_dim, ))['params']
+        params = encoder_def.init(rng, jnp.ones((1, observation_dim)))['params']
         encoder_model = TrainState.create(
             encoder_def, params=params, tx=optax.adam(3e-4)
         )
@@ -51,33 +51,46 @@ class DIDA(PyTreeNode):
     
     @jax.jit
     def update_policy_discr(self, noisy_expert_batch, mix_data_batch):
-        def loss_fn_policy_discr(params):
-            encoded_mix = self.encoder(mix_data_batch.observations, method='encode_source')
-            encoded_noisy_expert = self.encoder(noisy_expert_batch.observations, method='encode_source')
+        def loss_fn_policy_discr(params, params_encoder):
+            encoded_mix_cur = self.encoder(mix_data_batch.observations, method='encode_source', params=params_encoder)
+            encoded_mix_next = self.encoder(mix_data_batch.next_observations, method='encode_source', params=params_encoder)
+            encoded_mix = jnp.concatenate([encoded_mix_cur, encoded_mix_next], -1)
             
+            encoded_noisy_expert_cur = self.encoder(noisy_expert_batch.observations, method='encode_source', params=params_encoder)
+            encoded_noisy_expert_next = self.encoder(noisy_expert_batch.next_observations, method='encode_source', params=params_encoder)
+            encoded_noisy_expert = jnp.concatenate([encoded_noisy_expert_cur, encoded_noisy_expert_next], -1)
+
             discr_mix = self.policy_disc.state(encoded_mix, params=params)
             discr_noisy_expert = self.policy_disc.state(encoded_noisy_expert, params=params)
             noisy_expert_loss = optax.losses.sigmoid_binary_cross_entropy(discr_noisy_expert, jnp.ones_like(discr_noisy_expert))
             mix_loss = optax.losses.sigmoid_binary_cross_entropy(discr_mix, jnp.zeros_like(discr_mix))
             return mix_loss.mean() + noisy_expert_loss.mean()
         
-        new_policy_disc = self.policy_disc.replace(state=self.policy_disc.state.apply_loss_fn(loss_fn=loss_fn_policy_discr, has_aux=False))
-        return self.replace(policy_disc=new_policy_disc)
+        grads_policy_disc, grads_encoder = jax.grad(loss_fn_policy_discr, argnums=(0, 1), has_aux=False)(self.policy_disc.state.params,
+                                                                                               self.encoder.params)
+        new_policy_disc = self.policy_disc.replace(state=self.policy_disc.state.apply_gradients(grads=grads_policy_disc))
+        return self.replace(policy_disc=new_policy_disc), grads_encoder
 
     @jax.jit
-    def update_noise_discr(self, imitator_batch, noisy_expert_batch, anchor_batch):
+    def update_encoder(self, grads_p, grads_n, weight):
+        encoder_grads = jax.tree_map(lambda p_grads, n_grads: p_grads - weight * n_grads, grads_p, grads_n)
+        new_encoder = self.encoder.apply_gradients(grads=encoder_grads)
+        return self.replace(encoder=new_encoder)
+
+    @jax.jit
+    def update_noise_discr(self, imitator_batch, noisy_expert_batch, anchor_batch, weight):
         # sigma_imitator = jnp.concatenate([imitator_batch.observations, imitator_batch.next_observations], axis=-1)
         # sigma_anchor = jnp.concatenate([anchor_batch.observations, anchor_batch.next_observations], axis=-1)
         # sigma_noisy_expert = jnp.concatenate([noisy_expert_batch.observations, noisy_expert_batch.next_observations], axis=-1)
         
-        def loss_fn_noise_discr(params):
+        def loss_fn_noise_discr(params, encoder_params):
             # encoded_imitator = self.encoder(sigma_imitator, method='encode_source')
             # encoded_noisy_expert = self.encoder(sigma_noisy_expert, method='encode_source')
             # encoded_anchor = self.encoder(sigma_anchor, method='encode_source')
             
-            encoded_imitator = self.encoder(imitator_batch.observations, method='encode_source')
-            encoded_noisy_expert = self.encoder(noisy_expert_batch.observations, method='encode_source')
-            encoded_anchor = self.encoder(anchor_batch.observations, method='encode_source')
+            encoded_imitator = self.encoder(imitator_batch.observations, method='encode_source', params=encoder_params)
+            encoded_noisy_expert = self.encoder(noisy_expert_batch.observations, method='encode_source', params=encoder_params)
+            encoded_anchor = self.encoder(anchor_batch.observations, method='encode_source', params=encoder_params)
             
             discr_imitator = self.noisy_disc.state(encoded_imitator, params=params)
             discr_noisy_expert = self.noisy_disc.state(encoded_noisy_expert, params=params)
@@ -86,8 +99,11 @@ class DIDA(PyTreeNode):
             noisy_expert_loss = optax.losses.sigmoid_binary_cross_entropy(discr_noisy_expert, jnp.ones_like(discr_noisy_expert))
             anchor_loss = optax.losses.sigmoid_binary_cross_entropy(discr_noisy_anchor, jnp.ones_like(discr_noisy_anchor))
 
-            return imitator_loss.mean() + noisy_expert_loss.mean() + anchor_loss.mean() #* lambda
-            
-        new_noise_discr = self.noisy_disc.replace(state=self.noisy_disc.state.apply_loss_fn(loss_fn=loss_fn_noise_discr, has_aux=False))
-        return self.replace(noisy_disc=new_noise_discr)
+            return weight * (imitator_loss.mean() + noisy_expert_loss.mean() + anchor_loss.mean())
+        
+        grads_noisy_disc, grads_encoder = jax.grad(loss_fn_noise_discr, argnums=(0, 1), has_aux=False)(self.noisy_disc.state.params,
+                                                                                               self.encoder.params)
+        new_noise_discr = self.noisy_disc.replace(state=self.noisy_disc.state.apply_gradients(grads=grads_noisy_disc))
+        
+        return self.replace(noisy_disc=new_noise_discr), grads_encoder
     

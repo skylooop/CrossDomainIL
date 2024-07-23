@@ -20,13 +20,10 @@ import jax.numpy as jnp
 from ott.tools.sinkhorn_divergence import sinkhorn_divergence
 from ott.geometry import pointcloud
 import random
-from orbax.checkpoint import PyTreeCheckpointer
-from flax.training import orbax_utils
 import optax
 import flax.linen as nn
 import matplotlib.pyplot as plt
 import wandb
-from sklearn.manifold import TSNE
 from typing import *
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
@@ -35,9 +32,9 @@ from gc_datasets.replay_buffer import ReplayBuffer
 import functools
 from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
-from agents.notdual import ENOTCustom, W2NeuralDualCustom
+from main_agents.notdual import ENOTCustom
 from icvf_utils.icvf_networks import JointNOTAgent
-from agents.disc import Discriminator
+from main_agents.disc import Discriminator
 
 from gymnasium.wrappers import RecordEpisodeStatistics, TimeLimit, RecordVideo
 
@@ -179,7 +176,7 @@ def collect_expert(cfg: DictConfig) -> None:
     # python src/train_agent.py hydra.job.chdir=True
     #################
     
-    assert cfg.imitation_env.name in SUPPORTED_ENVS
+    #assert cfg.imitation_env.name in SUPPORTED_ENVS
     
     print(f"Collecting Expert data using {cfg.algo.name} on {cfg.imitation_env.name} env")
     print(OmegaConf.to_yaml(cfg))
