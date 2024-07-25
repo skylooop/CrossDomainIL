@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax.struct import PyTreeNode
 from typing import List
-from agents.disc import Discriminator
+from gail.disc import Discriminator
 from agents.notdual import ENOTCustom, ENOTPotentialsCustom
 from src.gail.rewards_transform import RewardsTransform
 from src.gail.base import GAIL

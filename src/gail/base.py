@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax.struct import PyTreeNode
-from agents.disc import Discriminator
+from gail.disc import Discriminator
 from typing import List
 from src.gail.rewards_transform import RewardsTransform
 

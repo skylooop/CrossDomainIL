@@ -40,7 +40,7 @@ from utils.const import SUPPORTED_ENVS
 from utils.loading_data import prepare_buffers_for_il
 from agents.notdual import ENOTCustom, W2NeuralDualCustom
 from icvf_utils.icvf_networks import JointNOTAgent
-from agents.disc import Discriminator
+from gail.disc import Discriminator
 from run_il import get_dataset
 from src.gail.base import GAIL
 from gymnasium.wrappers import RecordEpisodeStatistics, TimeLimit, RecordVideo
@@ -120,7 +120,7 @@ def collect_expert(cfg: DictConfig) -> None:
                                        action_space=eval_env.action_space, capacity=cfg.algo.buffer_size)
     
     buffer_disc = ReplayBuffer(observation_space=eval_env.observation_space,
-                               action_space=eval_env.action_space, capacity=5000)
+                               action_space=eval_env.action_space, capacity=10000)
     
     # source_expert_ds = get_dataset(gym.make('hopper-expert-v2'), expert=True, num_episodes=10)
     
@@ -143,8 +143,8 @@ def collect_expert(cfg: DictConfig) -> None:
 
     neural_f = ExpectileMLP(dim_hidden=[128, 128, 128, latent_dim*2], act_fn=jax.nn.elu)
     neural_g = NegativeMLP(dim_hidden=[128, 128, 128, 1], act_fn=jax.nn.elu)
-    optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
-    optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.99)
+    optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
+    optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
 
 
     not_proj = ENOTCustom(
@@ -161,7 +161,7 @@ def collect_expert(cfg: DictConfig) -> None:
             target_weight=5.0
     )
     
-    gail = EmbedGAIL.create(Discriminator.create(jnp.ones((latent_dim * 2,)), 5e-5, 10, 10000, 1e-5), 
+    gail = EmbedGAIL.create(Discriminator.create(jnp.ones((latent_dim * 2,)), 5e-5, 300_000), 
                             [RewardsStandartisation()], 
                             CoordEncoders(), 
                             not_proj)
