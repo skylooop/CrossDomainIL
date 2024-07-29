@@ -14,7 +14,7 @@ os.environ['HYDRA_FULL_ERROR'] = '1'
 import hydra
 import rootutils
 from omegaconf import DictConfig, OmegaConf
-
+from flax import linen as nn
 from tqdm.auto import tqdm
 import numpy as np
 import jax
@@ -32,6 +32,8 @@ from sklearn.manifold import TSNE
 
 ROOT = rootutils.setup_root(search_from=__file__, pythonpath=True, cwd=True, indicator='requirements.txt')
 
+from jaxrl_m.common import TrainState
+from jaxrl_m.networks import RelativeRepresentation
 from gc_datasets.replay_buffer import ReplayBuffer
 from gail.embed import EmbedGAIL, EncodersPair
 from gail.rewards_transform import NegativeShift, RewardsStandartisation
@@ -71,13 +73,78 @@ def load_expert(path_to_expert):
                         size=expert_source['observations'].shape[0])
     
 
-class CoordEncoders(EncodersPair):
+# class CoordEncoders(EncodersPair):
+
+#     def agent_embed(self, x): 
+#         return x
+
+#     def expert_embed(self, x): 
+#         return x
+    
+
+class DidaEncoders(EncodersPair):
+
+    state: TrainState
+    state_disc: Discriminator
+    pair_disc: Discriminator
+    weight: float
+
+    @classmethod
+    def create(cls, obs: jnp.ndarray, dim: int, weight: float):
+        model = RelativeRepresentation(hidden_dims=(128, 128, dim), ensemble=False)
+        rng = jax.random.PRNGKey(1)
+        params = model.init(rng, obs)['params']
+        
+        net = TrainState.create(
+            model_def=model,
+            params=params,
+            tx=optax.adamw(learning_rate=1e-4),
+        )
+
+        state_disc = Discriminator.create(jnp.ones((dim,)), 5e-5, 300_000)
+        pair_disc = Discriminator.create(jnp.ones((dim * 2,)), 5e-5, 300_000)
+
+        return cls(state=net, weight=weight, state_disc=state_disc, pair_disc=pair_disc)
 
     def agent_embed(self, x): 
-        return x
+        return self.state(x, params=self.state.params)
 
     def expert_embed(self, x): 
-        return x
+        return self.state(x, params=self.state.params)
+    
+    @jax.jit
+    def update(self, x, next_x):
+
+        def loss_fn(params):
+            embed = self.state(x, params=params)
+            next_embed = self.state(next_x, params=params)
+            pair = jnp.concatenate([embed, next_embed], -1)
+
+            state_loss = self.state_disc.generator_losses(embed).mean()
+            pair_loss = self.pair_disc.disc_losses(pair).mean()
+
+            return pair_loss + state_loss * self.weight
+
+        new_state = self.state.apply_loss_fn(loss_fn=loss_fn, has_aux=False)
+        
+        return self.replace(state=new_state)
+    
+    @jax.jit
+    def update_disc(self, x, next_x, y, next_y):
+        embed = self.agent_embed(x)
+        next_embed = self.agent_embed(next_x)
+
+        embed_y = self.expert_embed(y)
+        next_embed_y = self.expert_embed(next_y)
+
+        pair = jnp.concatenate([embed, next_embed], -1)
+        pair_y = jnp.concatenate([embed_y, next_embed_y], -1)
+  
+        new_state_disc = self.state_disc.update_step(embed_y, embed)
+        new_pair_disc = self.pair_disc.update_step(pair_y, pair)
+
+        return self.replace(state_disc=new_state_disc, pair_disc=new_pair_disc)
+
 
 
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="imitation")
@@ -139,7 +206,7 @@ def collect_expert(cfg: DictConfig) -> None:
     from ott.neural.methods.expectile_neural_dual import MLP as ExpectileMLP, NegativeMLP
         
     
-    latent_dim = 11
+    latent_dim = 16
 
     neural_f = ExpectileMLP(dim_hidden=[128, 128, 128, latent_dim*2], act_fn=jax.nn.elu)
     neural_g = NegativeMLP(dim_hidden=[128, 128, 128, 1], act_fn=jax.nn.elu)
@@ -160,10 +227,10 @@ def collect_expert(cfg: DictConfig) -> None:
             is_bidirectional=False,
             target_weight=5.0
     )
-    
+
     gail = EmbedGAIL.create(Discriminator.create(jnp.ones((latent_dim * 2,)), 5e-5, 300_000), 
                             [RewardsStandartisation()], 
-                            CoordEncoders(), 
+                            DidaEncoders.create(jnp.ones((11,)), latent_dim, weight=0.3), 
                             not_proj)
      
     
@@ -229,9 +296,19 @@ def collect_expert(cfg: DictConfig) -> None:
             
                 gail = gail.update_ot(expert_data.observations, expert_data.next_observations, 
                                         target_data.observations, target_data.next_observations)
-                gail, info = gail.update(expert_data.observations, expert_data.next_observations, 
+                gail, info, encoded_source, encoded_target = gail.update(expert_data.observations, expert_data.next_observations, 
                                         target_data.observations, target_data.next_observations)
-                encoded_source, encoded_target = gail.encoders.expert_embed(expert_data.observations), gail.encoders.agent_embed(target_data.observations)
+                
+                encoders = gail.encoders
+                encoders = encoders.update(target_data.observations, target_data.next_observations)
+                encoders = encoders.update_disc(
+                    target_data.observations, target_data.next_observations, 
+                    expert_data.observations, expert_data.next_observations
+                )
+
+                gail.replace(encoders=encoders)
+                
+                # encoded_source, encoded_target = gail.encoders.expert_embed(expert_data.observations), gail.encoders.agent_embed(target_data.observations)
                 
 
         if i >= 10000:

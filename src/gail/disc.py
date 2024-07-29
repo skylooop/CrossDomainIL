@@ -111,5 +111,10 @@ class Discriminator(PyTreeNode):
         loss =  g_nonsaturating_loss(d).reshape(-1)
         return loss  
     
+    def disc_losses(self, x) -> jnp.ndarray:
+        d = self.state(x, params=self.state.params)
+        loss =  F.softplus(d).reshape(-1)
+        return loss  
+    
 
     
