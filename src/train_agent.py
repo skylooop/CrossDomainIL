@@ -94,15 +94,19 @@ class DidaEncoders(EncodersPair):
         model = RelativeRepresentation(hidden_dims=(128, 128, dim), ensemble=False)
         rng = jax.random.PRNGKey(1)
         params = model.init(rng, obs)['params']
+
+        schedule = optax.cosine_decay_schedule(
+            init_value=1e-4, decay_steps=300_000, alpha=5e-2
+        )
         
         net = TrainState.create(
             model_def=model,
             params=params,
-            tx=optax.adamw(learning_rate=1e-4),
+            tx=optax.adamw(learning_rate=schedule),
         )
 
-        state_disc = Discriminator.create(jnp.ones((dim,)), 5e-5, 300_000)
-        pair_disc = Discriminator.create(jnp.ones((dim * 2,)), 5e-5, 300_000)
+        state_disc = Discriminator.create(jnp.ones((dim,)), 1e-4, 300_000)
+        pair_disc = Discriminator.create(jnp.ones((dim * 2,)), 1e-4, 300_000)
 
         return cls(state=net, weight=weight, state_disc=state_disc, pair_disc=pair_disc)
 
@@ -124,8 +128,8 @@ class DidaEncoders(EncodersPair):
             next_embed_e = self.state(next_s_e, params=params)
             pair_e = jnp.concatenate([embed_e, next_embed_e], -1)
 
-            state_loss = self.state_disc.generator_losses(embed).mean()
-            pair_loss = self.pair_disc.disc_losses(pair).mean()
+            state_loss = self.state_disc.generator_losses(embed).mean() + self.state_disc.real_generator_losses(embed_e).mean()
+            pair_loss = self.pair_disc.disc_losses(pair).mean() + self.pair_disc.real_disc_losses(pair_e).mean()
 
             return pair_loss + state_loss * self.weight, (
                 jax.lax.stop_gradient(embed), 
@@ -139,8 +143,8 @@ class DidaEncoders(EncodersPair):
         pair = jnp.concatenate([embed, next_embed], -1)
         pair_e = jnp.concatenate([embed_e, next_embed_e], -1)
   
-        new_state_disc = self.state_disc.update_step(embed_e, embed)
-        new_pair_disc = self.pair_disc.update_step(pair_e, pair)
+        new_state_disc, _ = self.state_disc.update_step(embed_e, embed)
+        new_pair_disc, _ = self.pair_disc.update_step(pair_e, pair)
         
         return self.replace(state=new_state, state_disc=new_state_disc, pair_disc=new_pair_disc), (
             embed, next_embed, embed_e, next_embed_e
@@ -229,8 +233,11 @@ def collect_expert(cfg: DictConfig) -> None:
 
     neural_f = ExpectileMLP(dim_hidden=[128, 128, 128, latent_dim*2], act_fn=jax.nn.elu)
     neural_g = NegativeMLP(dim_hidden=[128, 128, 128, 1], act_fn=jax.nn.elu)
-    optimizer_f = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
-    optimizer_g = optax.adam(learning_rate=3e-4, b1=0.9, b2=0.999)
+    schedule = optax.cosine_decay_schedule(
+            init_value=3e-4, decay_steps=300_000, alpha=1e-2
+    )
+    optimizer_f = optax.adam(learning_rate=schedule, b1=0.9, b2=0.99)
+    optimizer_g = optax.adam(learning_rate=schedule, b1=0.9, b2=0.99)
 
 
     not_proj = ENOTCustom(
@@ -283,8 +290,8 @@ def collect_expert(cfg: DictConfig) -> None:
             ri = 0.0
         else:
             ri = gail.predict_reward(observation[np.newaxis,], next_observation[np.newaxis,])[0] 
-        
-        target_buffer_agent.insert(observation, action, float(ri), mask, float(done), next_observation)
+            target_buffer_agent.insert(observation, action, float(ri), mask, float(done), next_observation)
+
         buffer_disc.insert(observation, action, float(ri), mask, float(done), next_observation)
         
         observation = next_observation
@@ -301,8 +308,8 @@ def collect_expert(cfg: DictConfig) -> None:
         if i == 3000:
 
             for _ in range(10000):
-                target_data = target_buffer_agent.sample(1024)
-                expert_data = source_expert_ds.sample(1024)
+                target_data = buffer_disc.sample(2024)
+                expert_data = source_expert_ds.sample(2024)
 
                 embed_a, next_embed_a, embed_e, next_embed_e = gail.encoders.get_embeds(
                     target_data.observations, target_data.next_observations, 
@@ -314,15 +321,15 @@ def collect_expert(cfg: DictConfig) -> None:
         if i >= 3000 and i % 1 == 0:
 
             for _ in range(1):
-                target_data = buffer_disc.sample(1024)
-                expert_data = source_expert_ds.sample(1024)
+                target_data = buffer_disc.sample(2024)
+                expert_data = source_expert_ds.sample(2024)
                 
                 encoders, (embed_a, next_embed_a, embed_e, next_embed_e) = gail.encoders.update(
                     target_data.observations, target_data.next_observations, 
                     expert_data.observations, expert_data.next_observations
                 )
 
-                gail.replace(encoders=encoders)
+                gail = gail.replace(encoders=encoders)
 
                 gail = gail.update_ot(embed_e, next_embed_e, embed_a, next_embed_a)
                 gail, info = gail.update(embed_e, next_embed_e, embed_a, next_embed_a)
@@ -333,7 +340,7 @@ def collect_expert(cfg: DictConfig) -> None:
         if i >= 10000:
 
             for _ in range(1):
-                target_data = target_buffer_agent.sample(512)
+                target_data = target_buffer_agent.sample(2012)
                 actor_update_info = agent.update(target_data)
 
 

@@ -44,7 +44,7 @@ class Discriminator(PyTreeNode):
         params = model.init(rng, obs)['params']
         
         schedule = optax.cosine_decay_schedule(
-            init_value=learning_rate, decay_steps=num_train_iters, alpha=5e-2
+            init_value=learning_rate, decay_steps=num_train_iters, alpha=1e-2
         )
 
         net = TrainState.create(
@@ -111,9 +111,19 @@ class Discriminator(PyTreeNode):
         loss =  g_nonsaturating_loss(d).reshape(-1)
         return loss  
     
+    def real_generator_losses(self, x) -> jnp.ndarray:
+        d = self.state(x, params=self.state.params)
+        loss =  g_nonsaturating_loss(-d).reshape(-1)
+        return loss  
+    
     def disc_losses(self, x) -> jnp.ndarray:
         d = self.state(x, params=self.state.params)
         loss =  F.softplus(d).reshape(-1)
+        return loss  
+    
+    def real_disc_losses(self, x) -> jnp.ndarray:
+        d = self.state(x, params=self.state.params)
+        loss =  F.softplus(-d).reshape(-1)
         return loss  
     
 
