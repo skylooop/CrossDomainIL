@@ -113,37 +113,56 @@ class DidaEncoders(EncodersPair):
         return self.state(x, params=self.state.params)
     
     @jax.jit
-    def update(self, x, next_x):
+    def update(self, s_a, next_s_a, s_e, next_s_e):
 
         def loss_fn(params):
-            embed = self.state(x, params=params)
-            next_embed = self.state(next_x, params=params)
+            embed = self.state(s_a, params=params)
+            next_embed = self.state(next_s_a, params=params)
             pair = jnp.concatenate([embed, next_embed], -1)
+
+            embed_e = self.state(s_e, params=params)
+            next_embed_e = self.state(next_s_e, params=params)
+            pair_e = jnp.concatenate([embed_e, next_embed_e], -1)
 
             state_loss = self.state_disc.generator_losses(embed).mean()
             pair_loss = self.pair_disc.disc_losses(pair).mean()
 
-            return pair_loss + state_loss * self.weight
+            return pair_loss + state_loss * self.weight, (
+                jax.lax.stop_gradient(embed), 
+                jax.lax.stop_gradient(next_embed), 
+                jax.lax.stop_gradient(embed_e), 
+                jax.lax.stop_gradient(next_embed_e)
+            )
 
-        new_state = self.state.apply_loss_fn(loss_fn=loss_fn, has_aux=False)
+        new_state, (embed, next_embed, embed_e, next_embed_e) = self.state.apply_loss_fn(loss_fn=loss_fn, has_aux=True)
+
+        pair = jnp.concatenate([embed, next_embed], -1)
+        pair_e = jnp.concatenate([embed_e, next_embed_e], -1)
+  
+        new_state_disc = self.state_disc.update_step(embed_e, embed)
+        new_pair_disc = self.pair_disc.update_step(pair_e, pair)
         
-        return self.replace(state=new_state)
+        return self.replace(state=new_state, state_disc=new_state_disc, pair_disc=new_pair_disc), (
+            embed, next_embed, embed_e, next_embed_e
+        )
     
     @jax.jit
-    def update_disc(self, x, next_x, y, next_y):
+    def get_embeds(self, x, next_x, y, next_y):
         embed = self.agent_embed(x)
         next_embed = self.agent_embed(next_x)
 
         embed_y = self.expert_embed(y)
         next_embed_y = self.expert_embed(next_y)
 
-        pair = jnp.concatenate([embed, next_embed], -1)
-        pair_y = jnp.concatenate([embed_y, next_embed_y], -1)
-  
-        new_state_disc = self.state_disc.update_step(embed_y, embed)
-        new_pair_disc = self.pair_disc.update_step(pair_y, pair)
+        return embed, next_embed, embed_y, next_embed_y
 
-        return self.replace(state_disc=new_state_disc, pair_disc=new_pair_disc)
+    #     pair = jnp.concatenate([embed, next_embed], -1)
+    #     pair_y = jnp.concatenate([embed_y, next_embed_y], -1)
+  
+    #     new_state_disc = self.state_disc.update_step(embed_y, embed)
+    #     new_pair_disc = self.pair_disc.update_step(pair_y, pair)
+
+    #     return self.replace(state_disc=new_state_disc, pair_disc=new_pair_disc)
 
 
 
@@ -284,8 +303,12 @@ def collect_expert(cfg: DictConfig) -> None:
             for _ in range(10000):
                 target_data = target_buffer_agent.sample(1024)
                 expert_data = source_expert_ds.sample(1024)
-                gail = gail.update_ot(expert_data.observations, expert_data.next_observations, 
-                                        target_data.observations, target_data.next_observations)
+
+                embed_a, next_embed_a, embed_e, next_embed_e = gail.encoders.get_embeds(
+                    target_data.observations, target_data.next_observations, 
+                    expert_data.observations, expert_data.next_observations
+                )
+                gail = gail.update_ot(embed_e, next_embed_e, embed_a, next_embed_a)
 
 
         if i >= 3000 and i % 1 == 0:
@@ -293,20 +316,16 @@ def collect_expert(cfg: DictConfig) -> None:
             for _ in range(1):
                 target_data = buffer_disc.sample(1024)
                 expert_data = source_expert_ds.sample(1024)
-            
-                gail = gail.update_ot(expert_data.observations, expert_data.next_observations, 
-                                        target_data.observations, target_data.next_observations)
-                gail, info, encoded_source, encoded_target = gail.update(expert_data.observations, expert_data.next_observations, 
-                                        target_data.observations, target_data.next_observations)
                 
-                encoders = gail.encoders
-                encoders = encoders.update(target_data.observations, target_data.next_observations)
-                encoders = encoders.update_disc(
+                encoders, (embed_a, next_embed_a, embed_e, next_embed_e) = gail.encoders.update(
                     target_data.observations, target_data.next_observations, 
                     expert_data.observations, expert_data.next_observations
                 )
 
                 gail.replace(encoders=encoders)
+
+                gail = gail.update_ot(embed_e, next_embed_e, embed_a, next_embed_a)
+                gail, info = gail.update(embed_e, next_embed_e, embed_a, next_embed_a)
                 
                 # encoded_source, encoded_target = gail.encoders.expert_embed(expert_data.observations), gail.encoders.agent_embed(target_data.observations)
                 
@@ -320,8 +339,8 @@ def collect_expert(cfg: DictConfig) -> None:
 
         if i % 5000 == 0 and  i > 0:
             fig, ax = plt.subplots()
-            both = jnp.concatenate([encoded_target, encoded_source], axis=0)
-            ax.scatter(both[:, 0], both[:, 1], c=['orange']*encoded_target.shape[0] + ['blue']*encoded_source.shape[0])
+            both = jnp.concatenate([embed_a, embed_a], axis=0)
+            ax.scatter(both[:, 0], both[:, 1], c=['orange']*embed_a.shape[0] + ['blue']*embed_e.shape[0])
             fig.savefig(f"viz_plots/both_{i}.png")
             
 
