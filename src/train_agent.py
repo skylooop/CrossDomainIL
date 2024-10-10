@@ -1,4 +1,5 @@
 import os
+from typing import Tuple
 import warnings
 
 import gym
@@ -64,22 +65,14 @@ def load_expert(path_to_expert):
     expert_source['next_observations'] = expert_source['next_observations'].astype(np.float32)
     
     
-    return Dataset(observations=expert_source['observations'],
-                        actions=expert_source['actions'],
-                        rewards=expert_source['rewards'],
-                        dones_float=expert_source['dones'],
-                        masks=1.0 - expert_source['dones'],
-                        next_observations=expert_source['next_observations'],
-                        size=expert_source['observations'].shape[0])
-    
-
-# class CoordEncoders(EncodersPair):
-
-#     def agent_embed(self, x): 
-#         return x
-
-#     def expert_embed(self, x): 
-#         return x
+    return Dataset(
+        observations=expert_source['observations'],
+        actions=expert_source['actions'],
+        rewards=expert_source['rewards'],
+        dones_float=expert_source['dones'],
+        masks=1.0 - expert_source['dones'],
+        next_observations=expert_source['next_observations'],
+        size=expert_source['observations'].shape[0])
     
 
 class DidaEncoders(EncodersPair):
@@ -90,23 +83,25 @@ class DidaEncoders(EncodersPair):
     weight: float
 
     @classmethod
-    def create(cls, obs: jnp.ndarray, dim: int, weight: float):
-        model = RelativeRepresentation(hidden_dims=(128, 128, dim), ensemble=False)
+    def create(cls, obs: jnp.ndarray, dims: Tuple[int], weight: float, num_train_iters: int, learning_rate: float):
+        model = RelativeRepresentation(hidden_dims=dims, ensemble=False)
         rng = jax.random.PRNGKey(1)
         params = model.init(rng, obs)['params']
 
         schedule = optax.cosine_decay_schedule(
-            init_value=1e-4, decay_steps=300_000, alpha=5e-2
+            init_value=learning_rate, decay_steps=num_train_iters, alpha=5e-2
         )
         
         net = TrainState.create(
             model_def=model,
             params=params,
             tx=optax.adamw(learning_rate=schedule),
+            eps=1e-6
         )
-
-        state_disc = Discriminator.create(jnp.ones((dim,)), 1e-4, 300_000)
-        pair_disc = Discriminator.create(jnp.ones((dim * 2,)), 1e-4, 300_000)
+ 
+        final_dim = dims[-1]
+        state_disc = Discriminator.create(jnp.ones((final_dim,)), learning_rate=learning_rate, num_train_iters=num_train_iters)
+        pair_disc = Discriminator.create(jnp.ones((final_dim * 2,)), learning_rate=learning_rate, num_train_iters=num_train_iters)
 
         return cls(state=net, weight=weight, state_disc=state_disc, pair_disc=pair_disc)
 
