@@ -2,7 +2,6 @@ import os
 from typing import Tuple
 import warnings
 
-import gym
 import gymnasium
 from matplotlib import axis
 
@@ -251,7 +250,7 @@ def collect_expert(cfg: DictConfig) -> None:
 
     gail = EmbedGAIL.create(Discriminator.create(jnp.ones((latent_dim * 2,)), 5e-5, 300_000), 
                             [RewardsStandartisation()], 
-                            DidaEncoders.create(jnp.ones((11,)), latent_dim, weight=0.3), 
+                            DidaEncoders.create(jnp.ones((11,)), latent_dim, weight=0.3, num_train_iters=300_000, learning_rate=1e-4), 
                             not_proj)
      
     
